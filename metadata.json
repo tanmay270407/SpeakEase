@@ -1,0 +1,6 @@
+{
+  "name": "SpeakEase",
+  "description": "An AI-assisted stammering support platform.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
