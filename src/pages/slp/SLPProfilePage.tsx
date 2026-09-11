@@ -4,6 +4,9 @@ import { supabase } from "../../lib/supabase";
 import { Avatar } from "../../components/Avatar";
 import { Button } from "../../components/ui/Button";
 import { uploadAvatar } from "../../lib/avatarUpload";
+import { reviewService, SLPRatingSummary } from "../../services/reviewService";
+import { SLPRatingBadge } from "../../components/slp/SLPRatingBadge";
+import { SLPReview } from "../../types/supabase";
 import {
   Edit3,
   Camera,
@@ -14,6 +17,8 @@ import {
   AlertCircle,
   Loader2,
   X,
+  Star,
+  MessageSquare,
 } from "lucide-react";
 
 export function SLPProfilePage() {
@@ -21,6 +26,8 @@ export function SLPProfilePage() {
 
   const [slpRecord, setSlpRecord] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ratingSummary, setRatingSummary] = useState<SLPRatingSummary | null>(null);
+  const [reviews, setReviews] = useState<SLPReview[]>([]);
 
   // Edit Mode state
   const [isEditing, setIsEditing] = useState(false);
@@ -59,6 +66,12 @@ export function SLPProfilePage() {
         setQualification(data.qualification || "");
         setYearsOfExperience(data.years_of_experience || "");
         setProfileImage(data.profile_image || profile.avatar_url || null);
+
+        // Fetch rating summary & reviews
+        const summary = await reviewService.getSLPRatingSummary(data.id);
+        setRatingSummary(summary);
+        const revs = await reviewService.getSLPReviews(data.id);
+        setReviews(revs);
       } else {
         // Fallback to profile
         setFullName(profile.full_name || "");
@@ -401,9 +414,17 @@ export function SLPProfilePage() {
               <p className="text-sm font-medium text-teal-700">
                 {slpRecord?.professional_title || "Speech-Language Pathologist"}
               </p>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-500 pb-1">
                 {slpRecord?.specialization || "Voice & Fluency Disorders"}
               </p>
+
+              {/* SLP Rating Badge */}
+              <SLPRatingBadge
+                averageRating={ratingSummary?.averageRating ?? null}
+                reviewCount={ratingSummary?.reviewCount ?? 0}
+                badge={ratingSummary?.badge ?? null}
+                size="md"
+              />
             </div>
           </div>
 
@@ -435,6 +456,76 @@ export function SLPProfilePage() {
             <p className="text-sm font-medium text-slate-800 mt-2">
               {slpRecord?.years_of_experience || "7+ years"}
             </p>
+          </div>
+
+          {/* Patient Reviews Section */}
+          <div className="pt-6 border-t border-slate-100 space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-teal-600" />
+                  Patient Feedback & Reviews
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Ratings represent authentic patient experience and completed session feedback.
+                </p>
+              </div>
+              {ratingSummary && ratingSummary.reviewCount > 0 && (
+                <span className="text-xs font-semibold text-teal-800 bg-teal-50 px-2.5 py-1 rounded-md border border-teal-100">
+                  ⭐ {ratingSummary.averageRating} / 5.0
+                </span>
+              )}
+            </div>
+
+            {reviews.length === 0 ? (
+              <div className="p-6 rounded-xl bg-slate-50/80 border border-slate-100 text-center space-y-1">
+                <p className="text-xs font-semibold text-slate-700">No ratings yet</p>
+                <p className="text-[11px] text-slate-400">
+                  When connected patients complete live or practice sessions and submit feedback, their reviews will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3 divide-y divide-slate-100">
+                {reviews.map((rev) => {
+                  const patientName = rev.patient?.full_name || "Verified Patient";
+                  const dateStr = new Date(rev.created_at).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  });
+                  return (
+                    <div key={rev.id} className="pt-3 first:pt-0 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 font-semibold text-slate-800">
+                          <Avatar src={rev.patient?.avatar_url} name={patientName} size="sm" />
+                          <span>{patientName}</span>
+                        </div>
+                        <span className="text-[11px] text-slate-400">{dateStr}</span>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <Star
+                            key={star}
+                            className={`w-3.5 h-3.5 ${
+                              star <= rev.rating
+                                ? "fill-amber-400 text-amber-400"
+                                : "text-slate-200"
+                            }`}
+                          />
+                        ))}
+                      </div>
+
+                      {rev.review && (
+                        <p className="text-xs text-slate-600 leading-relaxed bg-slate-50/60 p-2.5 rounded-lg border border-slate-100 italic">
+                          "{rev.review}"
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

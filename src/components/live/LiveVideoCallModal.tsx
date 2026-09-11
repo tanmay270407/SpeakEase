@@ -3,6 +3,8 @@ import { supabase } from "../../lib/supabase";
 import { LiveSession } from "../../types/supabase";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
+import { useAuth } from "../../contexts/AuthContext";
+import { reviewService } from "../../services/reviewService";
 import {
   Video,
   VideoOff,
@@ -17,7 +19,10 @@ import {
   Maximize2,
   Minimize2,
   AlertCircle,
-  Activity
+  Activity,
+  Star,
+  CheckCircle,
+  Loader2,
 } from "lucide-react";
 
 interface LiveVideoCallModalProps {
@@ -33,6 +38,7 @@ export function LiveVideoCallModal({
   onClose,
   userRole
 }: LiveVideoCallModalProps) {
+  const { profile } = useAuth();
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
   const [screenSharing, setScreenSharing] = useState(false);
@@ -42,6 +48,14 @@ export function LiveVideoCallModal({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [callActive, setCallActive] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
+
+  // Post-session rating state for patient
+  const [rating, setRating] = useState<number>(0);
+  const [hoverRating, setHoverRating] = useState<number>(0);
+  const [reviewText, setReviewText] = useState<string>("");
+  const [submittingReview, setSubmittingReview] = useState<boolean>(false);
+  const [submittedReview, setSubmittedReview] = useState<boolean>(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
 
   // Audio analysis / Visualizer level
   const [audioLevel, setAudioLevel] = useState(0);
@@ -230,12 +244,51 @@ export function LiveVideoCallModal({
         })
         .eq("id", session.id);
 
-      setTimeout(() => {
-        onClose();
-      }, 1200);
+      if (userRole === "slp") {
+        setTimeout(() => {
+          onClose();
+        }, 1200);
+      }
     } catch (err) {
       console.error("Error ending call:", err);
       onClose();
+    }
+  };
+
+  const handleReviewSubmit = async () => {
+    if (!rating || rating < 1 || rating > 5) {
+      setReviewError("Please select a rating from 1 to 5 stars.");
+      return;
+    }
+    if (!profile?.id || !session.slp_id) {
+      setReviewError("Unable to identify session details.");
+      return;
+    }
+
+    try {
+      setSubmittingReview(true);
+      setReviewError(null);
+
+      const res = await reviewService.submitReview({
+        slpId: session.slp_id,
+        patientId: profile.id,
+        sessionId: session.id,
+        rating,
+        review: reviewText,
+      });
+
+      if (!res.success) {
+        setReviewError(res.error || "Failed to submit review.");
+      } else {
+        setSubmittedReview(true);
+        setTimeout(() => {
+          onClose();
+        }, 1500);
+      }
+    } catch (err: any) {
+      setReviewError(err.message || "An unexpected error occurred.");
+    } finally {
+      setSubmittingReview(false);
     }
   };
 
@@ -315,13 +368,116 @@ export function LiveVideoCallModal({
           )}
 
           {callEnded ? (
-            <div className="flex flex-col items-center justify-center text-center space-y-3 p-6 animate-in zoom-in-95">
-              <div className="p-4 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                <Sparkles className="h-10 w-10" />
+            userRole === "patient" ? (
+              <div className="flex flex-col items-center justify-center max-w-lg w-full mx-auto p-6 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl text-center animate-in zoom-in-95">
+                {submittedReview ? (
+                  <div className="py-6 space-y-3">
+                    <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center">
+                      <CheckCircle className="h-6 w-6" />
+                    </div>
+                    <h4 className="text-xl font-bold text-white">Thank You for Your Feedback!</h4>
+                    <p className="text-xs text-slate-400">
+                      Your review helps us maintain high quality speech therapy services.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="w-full space-y-5 text-left">
+                    <div className="text-center space-y-1">
+                      <h4 className="text-xl font-bold text-white">How was your session with your SLP?</h4>
+                      <p className="text-xs text-slate-400">
+                        Rate your live therapy session experience with <span className="text-indigo-300 font-semibold">{otherPersonName}</span>.
+                      </p>
+                    </div>
+
+                    {/* Star Selection */}
+                    <div className="flex flex-col items-center justify-center gap-2 py-2">
+                      <div className="flex items-center gap-2">
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <button
+                            key={star}
+                            type="button"
+                            onClick={() => setRating(star)}
+                            onMouseEnter={() => setHoverRating(star)}
+                            onMouseLeave={() => setHoverRating(0)}
+                            className="p-1 rounded-lg transition-transform hover:scale-110 focus:outline-hidden cursor-pointer"
+                          >
+                            <Star
+                              className={`w-8 h-8 ${
+                                star <= (hoverRating || rating)
+                                  ? "fill-amber-400 text-amber-400"
+                                  : "text-slate-700 hover:text-slate-500"
+                              }`}
+                            />
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-xs font-semibold text-indigo-300 h-4">
+                        {(hoverRating || rating) === 5 && "Outstanding Session"}
+                        {(hoverRating || rating) === 4 && "Great Experience"}
+                        {(hoverRating || rating) === 3 && "Good Session"}
+                        {(hoverRating || rating) === 2 && "Okay"}
+                        {(hoverRating || rating) === 1 && "Needs Improvement"}
+                      </span>
+                    </div>
+
+                    {/* Optional Review Text */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-300">
+                        Optional Review & Feedback
+                      </label>
+                      <textarea
+                        value={reviewText}
+                        onChange={(e) => setReviewText(e.target.value)}
+                        placeholder="Share details about your session experience..."
+                        rows={3}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-indigo-500 transition-colors resize-none"
+                      />
+                    </div>
+
+                    {reviewError && (
+                      <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-xs text-red-300 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
+                        <span>{reviewError}</span>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex items-center justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={onClose}
+                        disabled={submittingReview}
+                        className="px-4 py-2.5 rounded-xl border border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800 text-xs font-medium transition-colors cursor-pointer"
+                      >
+                        Skip
+                      </button>
+                      <Button
+                        onClick={handleReviewSubmit}
+                        disabled={rating === 0 || submittingReview}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs h-9 px-5 rounded-xl"
+                      >
+                        {submittingReview ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                            Submitting...
+                          </>
+                        ) : (
+                          "Submit Feedback"
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
-              <h4 className="text-xl font-bold text-white">Session Completed</h4>
-              <p className="text-sm text-slate-400">Total Duration: {formatTime(elapsedSeconds)}</p>
-            </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center text-center space-y-3 p-6 animate-in zoom-in-95">
+                <div className="p-4 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <Sparkles className="h-10 w-10" />
+                </div>
+                <h4 className="text-xl font-bold text-white">Session Completed</h4>
+                <p className="text-sm text-slate-400">Total Duration: {formatTime(elapsedSeconds)}</p>
+              </div>
+            )
           ) : (
             <div className="relative w-full h-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 flex items-center justify-center">
               {/* Simulated Remote Video Screen */}

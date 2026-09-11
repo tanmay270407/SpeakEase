@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, Loader2, RotateCcw } from "lucide-react";
+import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, Loader2, RotateCcw, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
 import { AudioPlayer } from "../../components/AudioPlayer";
 import { PracticeLevelMeter } from "../../components/PracticeLevelMeter";
 import { Button } from "../../components/ui/Button";
+import { RateSLPModal } from "../../components/slp/RateSLPModal";
+import { reviewService } from "../../services/reviewService";
+import { connectionService } from "../../services/connectionService";
+import { useAuth } from "../../contexts/AuthContext";
 import { supabase } from "../../lib/supabase";
 import { formatDuration } from "../../lib/utils";
 
 export function SessionResultPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const { profile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
@@ -18,6 +23,9 @@ export function SessionResultPage() {
   const [metrics, setMetrics] = useState<any>(null);
   const [observation, setObservation] = useState<any>(null);
   const [clinicianNote, setClinicianNote] = useState<any>(null);
+  const [activeSLP, setActiveSLP] = useState<any | null>(null);
+  const [sessionReview, setSessionReview] = useState<any | null>(null);
+  const [rateModalOpen, setRateModalOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -50,6 +58,16 @@ export function SessionResultPage() {
       }
 
       if (noteRes.data) setClinicianNote(noteRes.data);
+
+      // Check if patient has active SLP or clinician note
+      if (profile?.id) {
+        const slpAssignment = await connectionService.getPatientActiveSLP(profile.id);
+        setActiveSLP(slpAssignment?.slps || null);
+      }
+
+      // Check if session has already been reviewed
+      const existingRev = await reviewService.getReviewForSession(sessionId);
+      setSessionReview(existingRev);
 
     } catch (err: any) {
       console.error(err);
@@ -331,6 +349,55 @@ export function SessionResultPage() {
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {/* Rate SLP Card if session was guided or assigned by SLP */}
+      {activeSLP && (session?.exercise_id !== null || session?.slp_id !== null || clinicianNote !== null) && (
+        <Card className="border-indigo-100 bg-gradient-to-r from-indigo-50/70 to-white shadow-xs">
+          <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 bg-indigo-100 text-indigo-700 rounded-xl shrink-0">
+                <Star className="w-5 h-5 fill-amber-400 text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Rate Your Speech-Language Pathologist</h3>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  How was your experience working with <strong className="text-slate-900">{activeSLP.full_name}</strong> on this guided activity?
+                </p>
+                {sessionReview && (
+                  <p className="text-xs font-semibold text-emerald-700 mt-1.5 flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+                    You rated this experience {sessionReview.rating}/5 stars
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <Button
+              onClick={() => setRateModalOpen(true)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs h-9 px-4 shrink-0 shadow-2xs"
+            >
+              {sessionReview ? 'View Review' : 'Rate SLP'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Rate SLP Modal */}
+      {activeSLP && sessionId && (
+        <RateSLPModal
+          isOpen={rateModalOpen}
+          onClose={() => setRateModalOpen(false)}
+          slpId={activeSLP.id}
+          slpName={activeSLP.full_name}
+          slpTitle={activeSLP.professional_title}
+          slpImage={activeSLP.profile_image}
+          sessionId={sessionId}
+          sessionTitle={session ? `Practice Session (${formatDuration(session.duration || 0)})` : 'Practice Session'}
+          onSuccess={() => {
+            loadResults(true);
+          }}
+        />
       )}
 
       {/* Failed Analysis Retry Section */}

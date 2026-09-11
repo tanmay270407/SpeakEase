@@ -201,6 +201,19 @@ export interface LiveSession {
   slp?: SLP;
 }
 
+export interface SLPReview {
+  id: string;
+  slp_id: string;
+  patient_id: string;
+  session_id: string;
+  rating: number;
+  review?: string | null;
+  created_at: string;
+  updated_at: string;
+  patient?: Profile;
+  slp?: SLP;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -273,6 +286,11 @@ export interface Database {
         Row: LiveSession;
         Insert: Omit<LiveSession, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<LiveSession, 'id' | 'created_at' | 'updated_at'>>;
+      };
+      slp_reviews: {
+        Row: SLPReview;
+        Insert: Omit<SLPReview, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<SLPReview, 'id' | 'created_at' | 'updated_at'>>;
       };
     };
   };

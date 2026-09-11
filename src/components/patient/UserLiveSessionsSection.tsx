@@ -4,6 +4,8 @@ import { useAuth } from "../../contexts/AuthContext";
 import { LiveSession } from "../../types/supabase";
 import { PatientBookSessionModal } from "./PatientBookSessionModal";
 import { LiveVideoCallModal } from "../live/LiveVideoCallModal";
+import { RateSLPModal } from "../slp/RateSLPModal";
+import { reviewService } from "../../services/reviewService";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../ui/Card";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
@@ -22,7 +24,8 @@ import {
   Send,
   History,
   Inbox,
-  Ban
+  Ban,
+  Star,
 } from "lucide-react";
 
 export function UserLiveSessionsSection() {
@@ -36,6 +39,8 @@ export function UserLiveSessionsSection() {
   const [isBookModalOpen, setIsBookModalOpen] = useState(false);
   const [selectedCallSession, setSelectedCallSession] = useState<LiveSession | null>(null);
   const [cancelModalSession, setCancelModalSession] = useState<LiveSession | null>(null);
+  const [rateModalSession, setRateModalSession] = useState<LiveSession | null>(null);
+  const [reviewedSessionIds, setReviewedSessionIds] = useState<Record<string, boolean>>({});
 
   const fetchUserLiveSessions = async () => {
     if (!profile?.id) return;
@@ -147,6 +152,24 @@ export function UserLiveSessionsSection() {
       s.status === "rejected" ||
       (s.status === "confirmed" && new Date(s.scheduled_end) <= new Date())
   );
+
+  useEffect(() => {
+    async function checkPastReviews() {
+      const completedList = pastSessions.filter((s) => s.status === "completed");
+      if (completedList.length === 0) return;
+
+      const map: Record<string, boolean> = {};
+      for (const s of completedList) {
+        const rev = await reviewService.getReviewForSession(s.id);
+        if (rev) map[s.id] = true;
+      }
+      setReviewedSessionIds(map);
+    }
+
+    if (pastSessions.length > 0) {
+      checkPastReviews();
+    }
+  }, [pastSessions.length]);
 
   const formatDateTimeStr = (isoStr: string) => {
     try {
@@ -494,29 +517,71 @@ export function UserLiveSessionsSection() {
               <div className="p-8 text-center text-xs text-slate-500">No past live sessions record found.</div>
             ) : (
               <div className="divide-y divide-slate-100">
-                {pastSessions.map((session) => (
-                  <div key={session.id} className="p-4 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <Avatar
-                        src={(session as any).slp?.profile_image || (session as any).slp?.avatar_url}
-                        name={(session as any).slp?.full_name || "Clinician"}
-                        size="sm"
-                      />
-                      <div>
-                        <p className="text-sm font-semibold text-slate-900">{(session as any).slp?.full_name}</p>
-                        <p className="text-xs text-slate-500">{formatDateTimeStr(session.scheduled_start)}</p>
+                {pastSessions.map((session) => {
+                  const isCompleted = session.status === "completed";
+                  const isReviewed = reviewedSessionIds[session.id];
+
+                  return (
+                    <div key={session.id} className="p-4 flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <Avatar
+                          src={(session as any).slp?.profile_image || (session as any).slp?.avatar_url}
+                          name={(session as any).slp?.full_name || "Clinician"}
+                          size="sm"
+                        />
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{(session as any).slp?.full_name}</p>
+                          <p className="text-xs text-slate-500">{formatDateTimeStr(session.scheduled_start)}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {getStatusBadge(session)}
+                        <span className="text-xs font-mono text-slate-500">{session.duration} min</span>
+
+                        {isCompleted && (
+                          isReviewed ? (
+                            <span className="text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                              Rated
+                            </span>
+                          ) : (
+                            <Button
+                              size="sm"
+                              onClick={() => setRateModalSession(session)}
+                              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-8 px-3 shadow-2xs font-semibold"
+                            >
+                              <Star className="w-3.5 h-3.5 mr-1 fill-amber-300 text-amber-300" />
+                              Rate SLP
+                            </Button>
+                          )
+                        )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {getStatusBadge(session)}
-                      <span className="text-xs font-mono text-slate-500">{session.duration} min</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Rate SLP Modal */}
+      {rateModalSession && (
+        <RateSLPModal
+          isOpen={!!rateModalSession}
+          onClose={() => setRateModalSession(null)}
+          slpId={rateModalSession.slp_id}
+          slpName={(rateModalSession as any).slp?.full_name || "Speech Clinician"}
+          slpTitle={(rateModalSession as any).slp?.professional_title || "Speech-Language Pathologist"}
+          slpImage={(rateModalSession as any).slp?.profile_image || (rateModalSession as any).slp?.avatar_url}
+          sessionId={rateModalSession.id}
+          sessionTitle={`Live Session (${formatDateTimeStr(rateModalSession.scheduled_start)})`}
+          onSuccess={() => {
+            if (rateModalSession) {
+              setReviewedSessionIds((prev) => ({ ...prev, [rateModalSession.id]: true }));
+            }
+          }}
+        />
       )}
 
       {/* Patient Book Session Modal */}

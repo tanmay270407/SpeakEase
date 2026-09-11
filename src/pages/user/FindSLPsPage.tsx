@@ -2,6 +2,8 @@ import React, { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { connectionService, SLPCardData } from '../../services/connectionService';
+import { reviewService, SLPRatingSummary } from '../../services/reviewService';
+import { SLPRatingBadge } from '../../components/slp/SLPRatingBadge';
 import { Card, CardContent } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Avatar } from '../../components/Avatar';
@@ -22,6 +24,7 @@ import {
 export function FindSLPsPage() {
   const { profile } = useAuth();
   const [slps, setSlps] = useState<SLPCardData[]>([]);
+  const [ratingsMap, setRatingsMap] = useState<Record<string, SLPRatingSummary>>({});
   const [hasActiveSLP, setHasActiveSLP] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -35,6 +38,13 @@ export function FindSLPsPage() {
       const res = await connectionService.getAvailableSLPs(profile.id);
       setSlps(res.slps);
       setHasActiveSLP(res.hasActiveSLP);
+
+      // Batch load rating summaries
+      if (res.slps && res.slps.length > 0) {
+        const slpIds = res.slps.map((s) => s.id);
+        const map = await reviewService.getMultipleSLPRatings(slpIds);
+        setRatingsMap(map);
+      }
     } catch (err: any) {
       console.error('Failed to load SLPs:', err);
     } finally {
@@ -235,6 +245,14 @@ export function FindSLPsPage() {
                           <p className="text-xs font-medium text-indigo-600 mt-0.5">
                             {slp.professional_title || 'Speech-Language Pathologist'}
                           </p>
+                          <div className="mt-1">
+                            <SLPRatingBadge
+                              averageRating={ratingsMap[slp.id]?.averageRating ?? null}
+                              reviewCount={ratingsMap[slp.id]?.reviewCount ?? 0}
+                              badge={ratingsMap[slp.id]?.badge ?? null}
+                              size="sm"
+                            />
+                          </div>
                         </div>
                       </div>
 

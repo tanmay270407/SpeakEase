@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { connectionService } from '../../services/connectionService';
+import { reviewService, SLPRatingSummary } from '../../services/reviewService';
+import { SLPRatingBadge } from '../../components/slp/SLPRatingBadge';
 import { PatientBookSessionModal } from '../../components/patient/PatientBookSessionModal';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
@@ -22,11 +24,13 @@ import {
   UserX,
   User,
   Video,
+  Star,
 } from 'lucide-react';
 
 export function MySLPPage() {
   const { profile } = useAuth();
   const [activeAssignment, setActiveAssignment] = useState<any | null>(null);
+  const [ratingSummary, setRatingSummary] = useState<SLPRatingSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [disconnectModalOpen, setDisconnectModalOpen] = useState(false);
   const [bookModalOpen, setBookModalOpen] = useState(false);
@@ -39,6 +43,11 @@ export function MySLPPage() {
       setLoading(true);
       const data = await connectionService.getPatientActiveSLP(profile.id);
       setActiveAssignment(data);
+
+      if (data?.slps?.id) {
+        const summary = await reviewService.getSLPRatingSummary(data.slps.id);
+        setRatingSummary(summary);
+      }
     } catch (err: any) {
       console.error('Error loading active SLP:', err);
     } finally {
@@ -147,6 +156,14 @@ export function MySLPPage() {
                     <p className="text-indigo-200 text-sm font-medium mt-0.5 truncate">
                       {slp.professional_title || 'Speech-Language Pathologist'}
                     </p>
+                    <div className="mt-2">
+                      <SLPRatingBadge
+                        averageRating={ratingSummary?.averageRating ?? null}
+                        reviewCount={ratingSummary?.reviewCount ?? 0}
+                        badge={ratingSummary?.badge ?? null}
+                        size="sm"
+                      />
+                    </div>
                   </div>
                 </div>
 
