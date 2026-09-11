@@ -11,7 +11,9 @@ import {
   FileText,
   Volume2,
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Lock,
+  AlertCircle
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -19,21 +21,41 @@ import { Badge } from "../../components/ui/Badge";
 import { ExerciseProgressTracker, FlowStep } from "../../components/ExerciseProgressTracker";
 import { getExerciseDetailsById, ExerciseDetail } from "../../data/exerciseDetailsData";
 import { supabase } from "../../lib/supabase";
+import { useAuth } from "../../contexts/AuthContext";
 
 export function ExerciseDetailPage() {
   const { exerciseId } = useParams<{ exerciseId: string }>();
+  const { profile } = useAuth();
   const navigate = useNavigate();
 
   const [exercise, setExercise] = useState<ExerciseDetail>(() => getExerciseDetailsById(exerciseId));
   const [activeStep, setActiveStep] = useState<"instructions" | "practice">("instructions");
   const [fontSizeClass, setFontSizeClass] = useState<"standard" | "large" | "extra">("large");
+  
+  const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
+  const [checkingAvailability, setCheckingAvailability] = useState(true);
 
-  // Load from database if needed to sync title/description
+  // Check assignment status and sync details
   useEffect(() => {
     let isMounted = true;
     async function syncExercise() {
       if (!exerciseId) return;
       try {
+        setCheckingAvailability(true);
+        // 1. Check patient assignment
+        if (profile?.id) {
+          const { data: peData } = await (supabase.from("patient_exercises") as any)
+            .select("status")
+            .eq("patient_id", profile.id)
+            .eq("exercise_id", exerciseId)
+            .maybeSingle();
+
+          if (isMounted) {
+            setIsAvailable(peData?.status === 'enabled');
+          }
+        }
+
+        // 2. Fetch exercise meta
         const { data } = await (supabase.from("exercises") as any)
           .select("*")
           .eq("id", exerciseId)
@@ -44,18 +66,22 @@ export function ExerciseDetailPage() {
           setExercise({
             ...detail,
             title: data.name || detail.title,
-            clinicalPurpose: detail.clinicalPurpose,
+            clinicalPurpose: data.description || detail.clinicalPurpose,
           });
         }
       } catch (err) {
         console.warn("Could not sync exercise from DB:", err);
+      } finally {
+        if (isMounted) {
+          setCheckingAvailability(false);
+        }
       }
     }
     syncExercise();
     return () => {
       isMounted = false;
     };
-  }, [exerciseId]);
+  }, [exerciseId, profile?.id]);
 
   const handleStartRecording = () => {
     navigate(`/exercises/${exercise.id}/record`);
@@ -65,6 +91,56 @@ export function ExerciseDetailPage() {
     if (step === "instructions") setActiveStep("instructions");
     if (step === "record") handleStartRecording();
   };
+
+  if (checkingAvailability) {
+    return (
+      <div className="flex items-center justify-center min-h-[300px]">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent"></div>
+      </div>
+    );
+  }
+
+  // If unassigned or disabled for this patient
+  if (isAvailable === false) {
+    return (
+      <div className="space-y-6 max-w-3xl mx-auto pb-12 pt-4">
+        <Link
+          to="/exercises"
+          className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back to Prescribed Exercises
+        </Link>
+
+        <Card className="border-amber-200 bg-amber-50/50 shadow-sm p-6 text-center">
+          <CardContent className="space-y-4 max-w-lg mx-auto py-8">
+            <div className="w-12 h-12 rounded-full bg-amber-100 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto">
+              <Lock className="w-6 h-6" />
+            </div>
+            <div className="space-y-1.5">
+              <h2 className="text-xl font-bold text-slate-900">Exercise Not Enabled</h2>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                <strong>{exercise.title}</strong> has not been enabled for your care plan by your Speech-Language Pathologist.
+              </p>
+            </div>
+            <div className="pt-3 flex flex-col sm:flex-row items-center justify-center gap-3">
+              <Link to="/exercises">
+                <Button variant="outline" className="text-slate-700">
+                  View Prescribed Exercises
+                </Button>
+              </Link>
+              <Link to="/practice">
+                <Button className="bg-indigo-600 hover:bg-indigo-700 text-white gap-2">
+                  <Mic className="w-4 h-4" />
+                  Go to General Practice
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-12">

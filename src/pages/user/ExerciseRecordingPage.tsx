@@ -16,13 +16,28 @@ export function ExerciseRecordingPage() {
   const navigate = useNavigate();
 
   const [exercise, setExercise] = useState<ExerciseDetail>(() => getExerciseDetailsById(exerciseId));
+  const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
+  const [checkingAvailability, setCheckingAvailability] = useState(true);
 
-  // Sync with DB if available
+  // Sync with DB if available and check patient assignment
   useEffect(() => {
     let isMounted = true;
     async function loadExercise() {
       if (!exerciseId) return;
       try {
+        setCheckingAvailability(true);
+        if (profile?.id) {
+          const { data: peData } = await (supabase.from("patient_exercises") as any)
+            .select("status")
+            .eq("patient_id", profile.id)
+            .eq("exercise_id", exerciseId)
+            .maybeSingle();
+
+          if (isMounted) {
+            setIsAvailable(peData?.status === 'enabled');
+          }
+        }
+
         const { data } = await (supabase.from("exercises") as any)
           .select("id, name, description, duration")
           .eq("id", exerciseId)
@@ -38,13 +53,17 @@ export function ExerciseRecordingPage() {
         }
       } catch (err) {
         console.warn("Could not fetch exercise from DB:", err);
+      } finally {
+        if (isMounted) {
+          setCheckingAvailability(false);
+        }
       }
     }
     loadExercise();
     return () => {
       isMounted = false;
     };
-  }, [exerciseId]);
+  }, [exerciseId, profile?.id]);
 
   // Step state: consent -> ready -> recording -> processing -> processing_error
   const [step, setStep] = useState<'consent' | 'ready' | 'recording' | 'processing' | 'processing_error'>('consent');
@@ -202,7 +221,12 @@ export function ExerciseRecordingPage() {
       setSessionId(newSessionId || null);
 
       if (newSessionId) {
-        await processAudio(newSessionId, audioBlob);
+        // Automatically start speech analysis in background
+        processAudio(newSessionId, audioBlob).catch(err => {
+          console.warn("Background audio processing notice:", err);
+        });
+        // Immediately navigate to exercise results page
+        navigate(`/exercises/${exercise.id}/results/${newSessionId}`);
       }
     } catch (err: any) {
       console.error(err);
@@ -212,42 +236,40 @@ export function ExerciseRecordingPage() {
     }
   };
 
-  const processAudio = async (currentSessionId: string, audioData: Blob) => {
-    setStep('processing');
-    setErrorMsg(null);
+  const processAudio = async (currentSessionId: string, audioData?: Blob | null) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) throw new Error("Not authenticated");
 
-      const formData = new FormData();
-      formData.append('sessionId', currentSessionId);
-      formData.append('audio', audioData, 'recording.webm');
+      let response;
+      if (audioData) {
+        const formData = new FormData();
+        formData.append('sessionId', currentSessionId);
+        formData.append('audio', audioData, 'recording.webm');
 
-      const response = await fetch('/api/analyze-speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: formData
-      });
+        response = await fetch('/api/analyze-speech', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: formData
+        });
+      } else {
+        response = await fetch(`/api/sessions/${currentSessionId}/retry-analysis`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+      }
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || 'Failed to process audio');
       }
-
-      // Stays inside Exercise section: navigates to exercise-specific results
-      navigate(`/exercises/${exercise.id}/results/${currentSessionId}`);
     } catch (err: any) {
-      console.error('Audio processing error:', err);
-      const msg = err.message || 'Speech analysis is temporarily unavailable.';
-      setErrorMsg(msg);
-      if (msg.includes("Audio could not be saved")) {
-        try {
-          await (supabase.from('sessions') as any).delete().eq('id', currentSessionId);
-        } catch (_) {}
-      }
-      setStep('processing_error');
+      console.error('Background audio processing error:', err);
     }
   };
 
@@ -259,6 +281,36 @@ export function ExerciseRecordingPage() {
       }
     };
   }, []);
+
+  if (checkingAvailability) {
+    return (
+      <div className="flex items-center justify-center min-h-[350px]">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent"></div>
+      </div>
+    );
+  }
+
+  if (isAvailable === false) {
+    return (
+      <div className="max-w-xl mx-auto py-12 px-4 text-center space-y-4">
+        <div className="w-12 h-12 rounded-full bg-amber-100 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto">
+          <AlertCircle className="w-6 h-6" />
+        </div>
+        <h2 className="text-xl font-bold text-slate-900">Exercise Not Enabled</h2>
+        <p className="text-sm text-slate-600">
+          This exercise routine has not been enabled for your care plan by your Speech-Language Pathologist.
+        </p>
+        <div className="pt-4 flex items-center justify-center gap-3">
+          <Link to="/exercises">
+            <Button variant="outline">Back to Prescribed Exercises</Button>
+          </Link>
+          <Link to="/practice">
+            <Button className="bg-indigo-600 hover:bg-indigo-700 text-white">Go to General Practice</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto py-8 px-4 space-y-6">
@@ -520,7 +572,7 @@ export function ExerciseRecordingPage() {
                   </Link>
                   <Button 
                     onClick={() => {
-                      if (sessionId && audioBlobRef.current) {
+                      if (sessionId) {
                         processAudio(sessionId, audioBlobRef.current);
                       }
                     }} 

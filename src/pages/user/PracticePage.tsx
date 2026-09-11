@@ -1,25 +1,27 @@
 import { useState, useRef, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Mic, Square, Shield, AlertCircle, Loader2 } from "lucide-react";
+import { Mic, Square, Shield, AlertCircle, Loader2, Sparkles, RefreshCw } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent } from "../../components/ui/Card";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { formatDuration } from "../../lib/utils";
 import { getAuthoritativeAudioDuration } from "../../lib/audioDuration";
-
-const PRACTICE_PARAGRAPH = 
-  "Every day gives me a new opportunity to practice speaking with confidence. I take a comfortable breath, speak at my own pace, and focus on expressing my thoughts clearly. I do not need to rush. I can pause when I need to, continue when I am ready, and stay relaxed while speaking. With regular practice, I can become more comfortable and confident in everyday conversations.";
+import { PracticeContentItem, getRandomPracticeParagraph } from "../../lib/practiceContent";
 
 export function PracticePage() {
   const { profile } = useAuth();
   const navigate = useNavigate();
 
-  // Step state: consent -> ready (consent approved, paragraph shown) -> recording -> processing -> processing_error
-  const [step, setStep] = useState<'consent' | 'ready' | 'recording' | 'processing' | 'processing_error'>('consent');
+  // Step state: consent -> ready (consent approved, paragraph shown) -> recording -> saving -> analyzing -> processing_error
+  const [step, setStep] = useState<'consent' | 'ready' | 'recording' | 'saving' | 'analyzing' | 'processing_error'>('consent');
   const [consentId, setConsentId] = useState<string | null>(null);
   const [isSubmittingConsent, setIsSubmittingConsent] = useState(false);
   
+  // Dynamic practice reading paragraph state
+  const [practiceContent, setPracticeContent] = useState<PracticeContentItem>(getRandomPracticeParagraph());
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+
   const [recordingState, setRecordingState] = useState<'idle' | 'requesting' | 'recording' | 'stopped' | 'error' | 'denied'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
@@ -33,6 +35,32 @@ export function PracticePage() {
   const timerRef = useRef<number | null>(null);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Fetch or generate dynamic practice content
+  const loadDynamicPracticeContent = async () => {
+    setIsLoadingContent(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        const res = await fetch('/api/practice/content', {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.content?.paragraph) {
+            setPracticeContent(json.content);
+            return;
+          }
+        }
+      }
+      setPracticeContent(getRandomPracticeParagraph(practiceContent.id));
+    } catch (err) {
+      console.warn("Falling back to local dynamic practice paragraph:", err);
+      setPracticeContent(getRandomPracticeParagraph(practiceContent.id));
+    } finally {
+      setIsLoadingContent(false);
+    }
+  };
 
   // User must explicitly click "I Agree". No automatic approval on load or timeout.
   const handleAgree = async () => {
@@ -48,6 +76,10 @@ export function PracticePage() {
       if (error) throw error;
       
       setConsentId(data?.id || null);
+      
+      // Load dynamic reading content for this session
+      await loadDynamicPracticeContent();
+      
       // Reveal the practice reading paragraph and show recording controls
       setStep('ready');
       setRecordingState('idle');
@@ -145,7 +177,8 @@ export function PracticePage() {
     }
     audioBlobRef.current = audioBlob;
     
-    setStep('processing');
+    setStep('saving');
+    setRecordingState('stopped');
     
     try {
       // Calculate authoritative media duration directly from the recorded audio Blob
@@ -163,7 +196,8 @@ export function PracticePage() {
         user_id: profile!.id,
         exercise_id: null,
         duration: authoritativeDuration,
-        review_status: 'NOT_REVIEWED'
+        review_status: 'NOT_REVIEWED',
+        analysis_status: 'analyzing'
       }).select().single();
 
       if (sessionError) throw sessionError;
@@ -176,7 +210,12 @@ export function PracticePage() {
       setSessionId(newSessionId || null);
 
       if (newSessionId) {
-        await processAudio(newSessionId, audioBlob);
+        // Automatically start speech analysis in the background without blocking navigation
+        processAudio(newSessionId, audioBlob).catch(err => {
+          console.warn("Background audio analysis notice:", err);
+        });
+        // Immediately navigate to results page
+        navigate(`/practice/${newSessionId}`);
       }
       
     } catch (err: any) {
@@ -187,41 +226,40 @@ export function PracticePage() {
     }
   };
 
-  const processAudio = async (currentSessionId: string, audioData: Blob) => {
-    setStep('processing');
-    setErrorMsg(null);
+  const processAudio = async (currentSessionId: string, audioData?: Blob | null) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) throw new Error("Not authenticated");
 
-      const formData = new FormData();
-      formData.append('sessionId', currentSessionId);
-      formData.append('audio', audioData, 'recording.webm');
+      let response;
+      if (audioData) {
+        const formData = new FormData();
+        formData.append('sessionId', currentSessionId);
+        formData.append('audio', audioData, 'recording.webm');
 
-      const response = await fetch('/api/analyze-speech', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: formData
-      });
+        response = await fetch('/api/analyze-speech', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`
+          },
+          body: formData
+        });
+      } else {
+        response = await fetch(`/api/sessions/${currentSessionId}/retry-analysis`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+      }
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || 'Failed to process audio');
       }
-
-      navigate(`/practice/${currentSessionId}`);
     } catch (err: any) {
-      console.error('Audio processing error:', err);
-      const msg = err.message || 'Speech analysis is temporarily unavailable.';
-      setErrorMsg(msg);
-      if (msg.includes("Audio could not be saved")) {
-        try {
-          await (supabase.from('sessions') as any).delete().eq('id', currentSessionId);
-        } catch (_) {}
-      }
-      setStep('processing_error');
+      console.error('Background audio processing notice:', err);
     }
   };
 
@@ -297,11 +335,27 @@ export function PracticePage() {
             </p>
           </div>
 
-          {/* One Readable Practice Paragraph - strictly hidden before consent */}
+          {/* One Readable Dynamic Practice Paragraph - strictly hidden before consent */}
           <Card id="practice-reading-paragraph-card" className="border-slate-200 shadow-sm bg-white">
-            <CardContent className="p-8 sm:p-10 text-center">
+            <CardContent className="p-8 sm:p-10 text-center space-y-4">
+              <div className="flex items-center justify-between text-xs text-slate-500 pb-2 border-b border-slate-100">
+                <span className="font-medium text-indigo-600 bg-indigo-50 px-2.5 py-0.5 rounded-full">
+                  {practiceContent.category || "Practice Passage"}
+                </span>
+                {recordingState === 'idle' && (
+                  <button
+                    onClick={() => setPracticeContent(getRandomPracticeParagraph(practiceContent.id))}
+                    disabled={isLoadingContent}
+                    className="flex items-center gap-1 text-slate-500 hover:text-indigo-600 transition-colors cursor-pointer"
+                    title="Change passage"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingContent ? 'animate-spin' : ''}`} />
+                    <span>New Passage</span>
+                  </button>
+                )}
+              </div>
               <p className="text-xl sm:text-2xl text-slate-800 leading-relaxed font-normal">
-                "{PRACTICE_PARAGRAPH}"
+                "{practiceContent.paragraph}"
               </p>
             </CardContent>
           </Card>
@@ -386,68 +440,68 @@ export function PracticePage() {
         </div>
       )}
 
-      {step === 'processing' && (
-        <div className="flex flex-col items-center text-center space-y-6 py-24">
+      {step === 'saving' && (
+        <div className="flex flex-col items-center text-center space-y-6 py-24 animate-in fade-in duration-200">
           <Loader2 className="w-10 h-10 text-indigo-600 animate-spin" />
           <div className="space-y-2">
-            <h2 className="text-xl font-semibold text-slate-900">Saving Practice Session</h2>
-            <p className="text-slate-500 text-sm">Preparing your audio for analysis...</p>
+            <h2 className="text-xl font-semibold text-slate-900">Saving Practice Recording</h2>
+            <p className="text-slate-500 text-sm">Saving audio to your clinical record...</p>
+          </div>
+        </div>
+      )}
+
+      {step === 'analyzing' && (
+        <div className="flex flex-col items-center text-center space-y-6 py-24 animate-in fade-in duration-200">
+          <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center ring-8 ring-indigo-50/50">
+            <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-semibold text-slate-900">Analyzing your practice session...</h2>
+            <p className="text-slate-500 text-sm max-w-md">
+              Extracting speech metrics, acoustic parameters, and generating clinical observations.
+            </p>
           </div>
         </div>
       )}
 
       {step === 'processing_error' && (
-        <Card className="border-slate-200 shadow-sm text-center max-w-xl mx-auto">
+        <Card className="border-slate-200 shadow-sm text-center max-w-xl mx-auto animate-in fade-in duration-200">
           <CardContent className="pt-8 pb-8 px-6 space-y-6">
             <div className="mx-auto bg-amber-50 w-16 h-16 rounded-full flex items-center justify-center">
               <AlertCircle className="w-8 h-8 text-amber-600" />
             </div>
             <div className="space-y-2">
               <h2 className="text-xl font-semibold text-slate-900">
-                {errorMsg === "Audio could not be saved." ? "Audio Could Not Be Saved" : "Analysis Unavailable"}
+                Practice level unavailable
               </h2>
               <p className="text-slate-600 max-w-sm mx-auto text-sm">
-                {errorMsg || "Audio could not be saved."}
+                Your session audio was securely saved. You can view the session or retry analysis now.
               </p>
-              {errorMsg !== "Audio could not be saved." && (
-                <p className="text-sm text-slate-500">
-                  Your session audio was securely recorded. You can view the session or retry analysis.
+              {errorMsg && (
+                <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded border border-amber-200">
+                  {errorMsg}
                 </p>
               )}
             </div>
             <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-4">
-              {errorMsg === "Audio could not be saved." ? (
-                <Button 
-                  onClick={() => {
-                    setStep('ready');
-                    setRecordingState('idle');
-                    setDuration(0);
-                    setErrorMsg(null);
-                  }}
-                  className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white"
+              {sessionId && (
+                <Link 
+                  to={`/practice/${sessionId}`}
+                  className="inline-flex h-10 px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md items-center justify-center text-sm font-medium transition-colors w-full sm:w-auto"
                 >
-                  Record Again
-                </Button>
-              ) : (
-                <>
-                  <Link 
-                    to={sessionId ? `/practice/${sessionId}` : "/dashboard"}
-                    className="inline-flex h-10 px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md items-center justify-center text-sm font-medium transition-colors w-full sm:w-auto"
-                  >
-                    {sessionId ? "View Saved Session" : "Skip to Dashboard"}
-                  </Link>
-                  <Button 
-                    onClick={() => {
-                      if (sessionId && audioBlobRef.current) {
-                        processAudio(sessionId, audioBlobRef.current);
-                      }
-                    }} 
-                    className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white"
-                  >
-                    Retry Analysis
-                  </Button>
-                </>
+                  View Saved Session
+                </Link>
               )}
+              <Button 
+                onClick={() => {
+                  if (sessionId) {
+                    processAudio(sessionId, audioBlobRef.current);
+                  }
+                }} 
+                className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                Retry Analysis
+              </Button>
             </div>
           </CardContent>
         </Card>

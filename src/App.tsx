@@ -31,6 +31,8 @@ import { SLPPatients } from "./pages/slp/SLPPatients";
 import { FindPatientsPage } from "./pages/slp/FindPatientsPage";
 import { SLPConnectionRequestsPage } from "./pages/slp/SLPConnectionRequestsPage";
 import { SLPPatientProfile } from "./pages/slp/SLPPatientProfile";
+import { SLPSessions } from "./pages/slp/SLPSessions";
+import { SLPExercises } from "./pages/slp/SLPExercises";
 import { SLPProfilePage } from "./pages/slp/SLPProfilePage";
 import { SLPAssistant } from "./pages/slp/SLPAssistant";
 import { SLPWorkflows } from "./pages/slp/SLPWorkflows";
@@ -103,8 +105,8 @@ export default function App() {
             <Route path="requests" element={<SLPConnectionRequestsPage />} />
             <Route path="patients/:id" element={<SLPPatientProfile />} />
             <Route path="profile" element={<SLPProfilePage />} />
-            <Route path="sessions" element={<div className="p-4">Sessions Page placeholder</div>} />
-            <Route path="exercises" element={<div className="p-4">Exercises Page placeholder</div>} />
+            <Route path="sessions" element={<SLPSessions />} />
+            <Route path="exercises" element={<SLPExercises />} />
             <Route path="assistant" element={<SLPAssistant />} />
             <Route path="workflows" element={<SLPWorkflows />} />
             <Route path="settings" element={<SettingsPage />} />

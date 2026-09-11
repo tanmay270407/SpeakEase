@@ -6,6 +6,9 @@ import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { Users, FileText, Activity, Clock, ChevronRight, AlertTriangle, Search, UserPlus, Inbox } from "lucide-react";
 import { formatDuration } from "../../lib/utils";
+import { getExerciseDetailsById } from "../../data/exerciseDetailsData";
+import { Avatar } from "../../components/Avatar";
+import { CardSkeleton } from "../../components/ui/Skeleton";
 
 export function SLPDashboard() {
   const { profile } = useAuth();
@@ -65,13 +68,14 @@ export function SLPDashboard() {
           setCorsairError(cErr.message);
         }
 
-        // Fallback: Get Active Patients Count from Supabase
-        const { count: pCount } = await (supabase.from('patient_assignments') as any)
-          .select('id', { count: 'exact' })
+        // Fallback: Get Active Patients from Supabase
+        const { data: assignments } = await (supabase.from('patient_assignments') as any)
+          .select('patient_id')
           .eq('slp_id', slpData.id)
           .eq('status', 'ACTIVE');
         
-        setPatientCount(pCount || 0);
+        const patientIds = Array.from(new Set((assignments || []).map((a: any) => a.patient_id)));
+        setPatientCount(patientIds.length);
 
         // Check pending received requests
         const { count: reqCount } = await (supabase.from('connection_requests') as any)
@@ -80,40 +84,36 @@ export function SLPDashboard() {
           .eq('status', 'pending');
         setPendingRequestsCount(reqCount || 0);
 
-        // Get Active Patients IDs to fetch sessions
-        const { data: assignments } = await (supabase.from('patient_assignments') as any)
-          .select('patient_id')
-          .eq('slp_id', slpData.id)
-          .eq('status', 'ACTIVE');
-
-        const patientIds = assignments?.map((a: any) => a.patient_id) || [];
-
         if (patientIds.length > 0) {
           // Get Total Sessions and sum duration
           const { data: allPatientSessions } = await (supabase.from('sessions') as any)
-            .select('id, duration')
-            .in('user_id', patientIds);
-          
-          setSessionCount(allPatientSessions?.length || 0);
-          const totalSec = (allPatientSessions || []).reduce((acc: number, s: any) => acc + (Number(s.duration) || 0), 0);
-          setTotalPracticeSeconds(totalSec);
-
-          // Get Sessions needing review
-          const { data: reviewSessions } = await (supabase.from('sessions') as any)
             .select(`
               id,
               created_at,
               duration,
               review_status,
               user_id,
-              profiles!sessions_user_id_fkey ( full_name )
+              exercise_id,
+              exercises ( name ),
+              profiles!sessions_user_id_fkey ( full_name, avatar_url )
             `)
             .in('user_id', patientIds)
-            .in('review_status', ['READY_FOR_REVIEW', 'REVIEW_PENDING'])
-            .order('created_at', { ascending: false })
-            .limit(10);
-            
-          setNeedsReviewSessions(reviewSessions || []);
+            .order('created_at', { ascending: false });
+          
+          const validSessions = allPatientSessions || [];
+          setSessionCount(validSessions.length);
+          const totalSec = validSessions.reduce((acc: number, s: any) => acc + (Number(s.duration) || 0), 0);
+          setTotalPracticeSeconds(totalSec);
+
+          // Get Sessions needing review (any non-reviewed session)
+          const reviewSessions = validSessions.filter((s: any) => s.review_status !== 'REVIEWED');
+          setNeedsReviewSessions(reviewSessions);
+          setRecentSessions(validSessions);
+        } else {
+          setSessionCount(0);
+          setTotalPracticeSeconds(0);
+          setNeedsReviewSessions([]);
+          setRecentSessions([]);
         }
 
       } catch (err) {
@@ -124,12 +124,36 @@ export function SLPDashboard() {
     }
 
     loadDashboard();
+
+    // Setup realtime subscription for live synchronization
+    const channel = supabase
+      .channel('slp_dashboard_changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, () => {
+        loadDashboard();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'patient_assignments' }, () => {
+        loadDashboard();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [profile?.id]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent"></div>
+      <div className="space-y-8 max-w-5xl">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">SLP Dashboard</h1>
+          <p className="text-slate-500 text-sm">Overview of your assigned patients and practice sessions.</p>
+        </div>
+        <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-4">
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
       </div>
     );
   }
@@ -257,30 +281,44 @@ export function SLPDashboard() {
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
-                {needsReviewSessions.map((session) => (
+                {needsReviewSessions.map((session) => {
+                  const exerciseTitle = session.exercises?.name || (session.exercise_id ? getExerciseDetailsById(session.exercise_id)?.title || 'Exercise Routine' : 'Practice Session');
+                  return (
                   <Link 
                     key={session.id}
-                    to={`/slp/patients/${session.user_id}`}
+                    to={`/slp/sessions?sessionId=${session.id}`}
                     className="flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
                   >
-                    <div className="space-y-1">
-                      <div className="font-medium text-slate-900">
-                        {session.profiles?.full_name || 'Patient'}
-                      </div>
-                      <div className="flex items-center gap-3 text-sm text-slate-500">
-                        <span>{new Date(session.created_at).toLocaleDateString()}</span>
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {formatDuration(session.duration)}
-                        </span>
+                    <div className="flex items-center gap-3">
+                      <Avatar 
+                        name={session.profiles?.full_name || 'Patient'} 
+                        src={session.profiles?.avatar_url}
+                        className="w-10 h-10 text-xs shrink-0"
+                      />
+                      <div className="space-y-0.5">
+                        <div className="font-semibold text-slate-900 text-sm">
+                          {session.profiles?.full_name || 'Patient'}
+                        </div>
+                        <div className="text-xs font-medium text-indigo-700">
+                          {exerciseTitle}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <span>{new Date(session.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>•</span>
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {formatDuration(session.duration)}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 font-normal">Pending</Badge>
-                      <ChevronRight className="w-5 h-5 text-slate-400" />
+                    <div className="flex items-center gap-3">
+                      <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 font-normal text-xs">Needs Review</Badge>
+                      <ChevronRight className="w-4 h-4 text-slate-400" />
                     </div>
                   </Link>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>
@@ -298,27 +336,41 @@ export function SLPDashboard() {
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
-                {recentSessions.slice(0, 5).map((session) => (
+                {recentSessions.slice(0, 5).map((session) => {
+                  const exerciseTitle = session.exercises?.name || (session.exercise_id ? getExerciseDetailsById(session.exercise_id)?.title || 'Exercise Routine' : 'Practice Session');
+                  return (
                   <Link 
                     key={session.id}
-                    to={`/slp/patients/${session.user_id}`}
+                    to={`/slp/sessions?sessionId=${session.id}`}
                     className="flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
                   >
-                    <div className="space-y-1">
-                      <div className="font-medium text-slate-900">
-                        {session.profiles?.full_name || 'Patient'}
-                      </div>
-                      <div className="flex items-center gap-3 text-sm text-slate-500">
-                        <span>{new Date(session.created_at).toLocaleDateString()}</span>
-                        <span className="flex items-center gap-1 font-mono text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
-                          <Clock className="w-3 h-3 text-slate-400" />
-                          {formatDuration(session.duration)}
-                        </span>
+                    <div className="flex items-center gap-3">
+                      <Avatar 
+                        name={session.profiles?.full_name || 'Patient'} 
+                        src={session.profiles?.avatar_url}
+                        className="w-10 h-10 text-xs shrink-0"
+                      />
+                      <div className="space-y-0.5">
+                        <div className="font-semibold text-slate-900 text-sm">
+                          {session.profiles?.full_name || 'Patient'}
+                        </div>
+                        <div className="text-xs font-medium text-slate-600">
+                          {exerciseTitle}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <span>{new Date(session.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>•</span>
+                          <span className="flex items-center gap-1 font-mono">
+                            <Clock className="w-3 h-3 text-slate-400" />
+                            {formatDuration(session.duration)}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                    <ChevronRight className="w-5 h-5 text-slate-400" />
+                    <ChevronRight className="w-4 h-4 text-slate-400" />
                   </Link>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>

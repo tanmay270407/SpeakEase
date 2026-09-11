@@ -22,7 +22,9 @@ import { useAuth } from "../../contexts/AuthContext";
 import { Session, Notification } from "../../types/supabase";
 import { formatDuration } from "../../lib/utils";
 import { connectionService } from "../../services/connectionService";
+import { getExerciseDetailsById } from "../../data/exerciseDetailsData";
 import { Stethoscope, UserPlus, HeartHandshake } from "lucide-react";
+import { PatientLiveSessionsCard } from "../../components/patient/PatientLiveSessionsCard";
 
 interface ReviewDetails {
   session: Session | null;
@@ -54,7 +56,7 @@ export function UserDashboard() {
         .select('*')
         .eq('user_id', profile.id)
         .order('created_at', { ascending: false })
-        .limit(10);
+        .limit(30);
 
       if (!notifErr && data) {
         setNotifications(data as Notification[]);
@@ -73,7 +75,7 @@ export function UserDashboard() {
         // Fetch recent sessions for the current user
         const { data, error: fetchError } = await supabase
           .from('sessions')
-          .select('*')
+          .select('*, exercises(name)')
           .eq('user_id', profile?.id || '')
           .order('created_at', { ascending: false })
           .limit(30);
@@ -227,7 +229,8 @@ export function UserDashboard() {
     let weekCount = 0;
     let weekSeconds = 0;
     
-    const recent = sessions.slice(0, 3);
+    // All sessions sorted newest first for internal scrolling
+    const recent = sessions;
     
     // Chart data mapping (last 7 days activity in minutes)
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -265,6 +268,30 @@ export function UserDashboard() {
       chartData: formattedChartData
     };
   }, [sessions]);
+
+  const formatSessionDateTime = (dateString: string) => {
+    try {
+      const d = new Date(dateString);
+      const day = d.getDate();
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
+      const month = months[d.getMonth()];
+      const hours = String(d.getHours()).padStart(2, '0');
+      const mins = String(d.getMinutes()).padStart(2, '0');
+      return `${day} ${month}, ${hours}:${mins}`;
+    } catch {
+      return new Date(dateString).toLocaleDateString();
+    }
+  };
+
+  const getSessionTitle = (session: any) => {
+    if (session.exercises?.name) return session.exercises.name;
+    if (session.exercise_id) {
+      const detail = getExerciseDetailsById(session.exercise_id);
+      if (detail?.title) return detail.title;
+      return "Exercise Routine";
+    }
+    return "Practice Session";
+  };
 
   const formatSessionDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -414,111 +441,181 @@ export function UserDashboard() {
         </CardContent>
       </Card>
 
-      {/* Notifications Section */}
-      <Card className="border-slate-200 shadow-sm overflow-hidden">
-        <CardHeader className="py-4 bg-slate-50/70 border-b border-slate-100 flex flex-row items-center justify-between">
+      {/* Incoming Live Session Requests & Upcoming Appointments */}
+      <PatientLiveSessionsCard />
+
+      {/* Notifications Section - Compact Fixed-Height Card with Internal Scroll */}
+      <Card className="border-slate-200 shadow-sm overflow-hidden flex flex-col h-[330px] sm:h-[350px]">
+        <CardHeader className="py-3 px-4 bg-slate-50/80 border-b border-slate-100 flex flex-row items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <Bell className="w-4 h-4 text-indigo-600" />
-            <CardTitle className="text-base font-semibold text-slate-900">Notifications</CardTitle>
+            <Bell className="w-4 h-4 text-indigo-600 shrink-0" />
+            <CardTitle className="text-sm font-semibold text-slate-900">Notifications</CardTitle>
           </div>
-          {notifications.some(n => !n.is_read) && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
-              New updates
+          {notifications.filter(n => !n.is_read).length > 0 ? (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700">
+              {notifications.filter(n => !n.is_read).length} New
             </span>
+          ) : (
+            <span className="text-xs text-slate-400 font-medium">All caught up</span>
           )}
         </CardHeader>
-        <CardContent className="p-0">
+
+        <CardContent className="p-0 flex-1 overflow-y-auto min-h-0 divide-y divide-slate-100 overscroll-contain">
           {notifications.length === 0 ? (
-            <div className="p-6 text-center text-sm text-slate-500 italic">
-              No new notifications.
+            <div className="h-full flex flex-col items-center justify-center p-6 text-center text-slate-400 text-xs sm:text-sm">
+              <Bell className="w-6 h-6 text-slate-300 mb-2 stroke-[1.5]" />
+              <p className="font-medium text-slate-500">No new notifications</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">Updates from your SLP and session reviews will appear here.</p>
             </div>
           ) : (
             <div className="divide-y divide-slate-100">
-              {notifications.map((notif) => (
-                <div
-                  key={notif.id}
-                  className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                    !notif.is_read ? 'bg-indigo-50/30' : 'hover:bg-slate-50/50'
-                  }`}
-                >
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-slate-900 text-sm">
-                        {notif.title}
-                      </span>
-                      {!notif.is_read ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-600 text-white">
-                          Unread
+              {notifications.map((notif) => {
+                const isUnread = !notif.is_read;
+                const formattedDate = (() => {
+                  try {
+                    const d = new Date(notif.created_at);
+                    const day = d.getDate();
+                    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'];
+                    const month = months[d.getMonth()];
+                    const hours = String(d.getHours()).padStart(2, '0');
+                    const mins = String(d.getMinutes()).padStart(2, '0');
+                    return `${day} ${month}, ${hours}:${mins}`;
+                  } catch {
+                    return new Date(notif.created_at).toLocaleDateString();
+                  }
+                })();
+
+                return (
+                  <div
+                    key={notif.id}
+                    className={`p-3 sm:p-3.5 flex items-start justify-between gap-3 transition-colors ${
+                      isUnread 
+                        ? 'bg-indigo-50/40 hover:bg-indigo-50/70' 
+                        : 'hover:bg-slate-50/70'
+                    }`}
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-xs sm:text-sm truncate ${isUnread ? 'font-semibold text-slate-900' : 'font-medium text-slate-800'}`}>
+                          {notif.title}
                         </span>
-                      ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-normal bg-slate-100 text-slate-600">
-                          Read
-                        </span>
-                      )}
+                        {isUnread ? (
+                          <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-indigo-600 text-white">
+                            New
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-medium bg-slate-100 text-slate-500">
+                            Read
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                        {notif.message}
+                      </p>
+                      <p className="text-[11px] text-slate-400 font-medium">
+                        {formattedDate}
+                      </p>
                     </div>
-                    <p className="text-xs text-slate-600">{notif.message}</p>
-                    <p className="text-[11px] text-slate-400">
-                      {new Date(notif.created_at).toLocaleDateString(undefined, {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
-                    </p>
+                    <div className="shrink-0 pt-0.5">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleOpenReview(notif)}
+                        className="text-xs h-7 px-2.5 text-indigo-700 border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800 font-medium"
+                      >
+                        {notif.type === 'SLP_REVIEW' || notif.session_id ? 'View Review' : 'View Details'}
+                      </Button>
+                    </div>
                   </div>
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleOpenReview(notif)}
-                      className="text-xs text-indigo-700 border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800 shrink-0 font-medium"
-                    >
-                      View Review
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>
       </Card>
 
       <div className="grid gap-6 md:grid-cols-2">
-        <Card className="border-slate-200 shadow-none">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-sm font-medium text-slate-500">This week</CardTitle>
+        <Card className="border-slate-200 shadow-sm flex flex-col justify-between h-[330px] sm:h-[350px]">
+          <CardHeader className="py-3 px-4 bg-slate-50/80 border-b border-slate-100 shrink-0">
+            <CardTitle className="text-sm font-semibold text-slate-900">This week</CardTitle>
           </CardHeader>
-          <CardContent className="flex items-end gap-6">
-            <div>
+          <CardContent className="p-6 flex-1 flex flex-col justify-center gap-6">
+            <div className="space-y-1">
               <div className="text-3xl font-bold text-slate-900">{thisWeekCount}</div>
-              <div className="text-sm text-slate-500">Sessions</div>
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">Completed Sessions</div>
             </div>
-            <div>
+            <div className="space-y-1 pt-4 border-t border-slate-100">
               <div className="text-3xl font-bold text-slate-900">{thisWeekMinutes}</div>
-              <div className="text-sm text-slate-500">Minutes</div>
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">Total Practice Minutes</div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="border-slate-200 shadow-none">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-sm font-medium text-slate-500">Recent Sessions</CardTitle>
+        {/* Sessions Card - Compact Fixed-Height Card with Internal Scroll */}
+        <Card className="border-slate-200 shadow-sm overflow-hidden flex flex-col h-[330px] sm:h-[350px]">
+          <CardHeader className="py-3 px-4 bg-slate-50/80 border-b border-slate-100 flex flex-row items-center justify-between shrink-0">
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-indigo-600 shrink-0" />
+              <CardTitle className="text-sm font-semibold text-slate-900">Sessions</CardTitle>
+            </div>
+            <Link 
+              to="/sessions" 
+              className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 transition-colors"
+            >
+              View All
+            </Link>
           </CardHeader>
-          <CardContent className="space-y-4">
+          
+          <CardContent className="p-0 flex-1 overflow-y-auto min-h-0 divide-y divide-slate-100 overscroll-contain">
             {recentSessions.length === 0 ? (
-              <div className="text-sm text-slate-500 italic py-2">No practice sessions yet.</div>
+              <div className="h-full flex flex-col items-center justify-center p-6 text-center text-slate-400 text-xs sm:text-sm">
+                <PlayCircle className="w-6 h-6 text-slate-300 mb-2 stroke-[1.5]" />
+                <p className="font-medium text-slate-500">No practice sessions yet.</p>
+                <Link to="/practice" className="mt-3">
+                  <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-8 px-3">
+                    Start Practice
+                  </Button>
+                </Link>
+              </div>
             ) : (
-              recentSessions.map(session => (
-                <div key={session.id} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2 text-slate-700">
-                    <CalendarIcon className="h-4 w-4 text-slate-400" />
-                    <span>{formatSessionDate(session.created_at)}</span>
-                  </div>
-                  <span className="text-slate-500 flex items-center gap-1">
-                    <Clock className="h-3 w-3" /> {formatDuration(session.duration)}
-                  </span>
-                </div>
-              ))
+              <div className="divide-y divide-slate-100">
+                {recentSessions.map((session) => {
+                  const title = getSessionTitle(session);
+                  const dateTime = formatSessionDateTime(session.created_at);
+                  const durationStr = formatDuration(session.duration);
+                  const isReviewed = session.review_status === 'REVIEWED';
+
+                  return (
+                    <Link
+                      key={session.id}
+                      to="/sessions"
+                      className="p-3 sm:p-3.5 flex items-center justify-between gap-3 hover:bg-slate-50/70 transition-colors block"
+                    >
+                      <div className="space-y-1 min-w-0 flex-1">
+                        <div className="font-semibold text-slate-900 text-xs sm:text-sm truncate">
+                          {title}
+                        </div>
+                        <div className="text-[11px] sm:text-xs text-slate-500 font-medium flex items-center gap-1.5">
+                          <span>{dateTime}</span>
+                          <span>·</span>
+                          <span className="font-mono">{durationStr}</span>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {isReviewed ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Reviewed
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] sm:text-[11px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
+                            Needs Review
+                          </span>
+                        )}
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
             )}
           </CardContent>
         </Card>

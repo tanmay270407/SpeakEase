@@ -60,6 +60,7 @@ export const connectionService = {
    * Get active SLP for a given patient user ID
    */
   async getPatientActiveSLP(patientUserId: string) {
+    if (!patientUserId || !patientUserId.trim()) return null;
     try {
       const { data, error } = await (supabase.from('patient_assignments') as any)
         .select(`
@@ -105,6 +106,7 @@ export const connectionService = {
    * Get active patients assigned to a given SLP user ID
    */
   async getSLPActivePatients(slpUserId: string) {
+    if (!slpUserId || !slpUserId.trim()) return [];
     try {
       const { data: slpData } = await (supabase.from('slps') as any)
         .select('id')
@@ -168,21 +170,31 @@ export const connectionService = {
 
       if (slpError) throw slpError;
 
+      const validPatientId = patientUserId && patientUserId.trim() !== '';
+
       // 2. Fetch active patient_assignments for this patient
-      const { data: activeAssignments } = await (supabase.from('patient_assignments') as any)
-        .select('slp_id, status')
-        .eq('patient_id', patientUserId)
-        .eq('status', 'ACTIVE');
+      let activeAssignments: any[] = [];
+      if (validPatientId) {
+        const { data } = await (supabase.from('patient_assignments') as any)
+          .select('slp_id, status')
+          .eq('patient_id', patientUserId)
+          .eq('status', 'ACTIVE');
+        activeAssignments = data || [];
+      }
 
       const activeSlpIdSet = new Set((activeAssignments || []).map((a: any) => a.slp_id));
       const hasActiveSLP = activeSlpIdSet.size > 0;
       const activeSLPId = activeAssignments?.[0]?.slp_id;
 
       // 3. Fetch pending connection requests involving this patient
-      const { data: pendingRequests } = await (supabase.from('connection_requests') as any)
-        .select('id, sender_id, receiver_id, sender_type, status')
-        .or(`sender_id.eq.${patientUserId},receiver_id.eq.${patientUserId}`)
-        .eq('status', 'pending');
+      let pendingRequests: any[] = [];
+      if (validPatientId) {
+        const { data } = await (supabase.from('connection_requests') as any)
+          .select('id, sender_id, receiver_id, sender_type, status')
+          .or(`sender_id.eq.${patientUserId},receiver_id.eq.${patientUserId}`)
+          .eq('status', 'pending');
+        pendingRequests = data || [];
+      }
 
       const formatted: SLPCardData[] = (slpsData || []).map((s: any) => {
         let relationshipStatus: SLPCardData['relationshipStatus'] = 'available';
@@ -270,10 +282,14 @@ export const connectionService = {
       }
 
       // 4. Fetch pending requests involving this SLP
-      const { data: pendingRequests } = await (supabase.from('connection_requests') as any)
-        .select('id, sender_id, receiver_id, sender_type, status')
-        .or(`sender_id.eq.${slpUserId},receiver_id.eq.${slpUserId}`)
-        .eq('status', 'pending');
+      let pendingRequests: any[] = [];
+      if (slpUserId && slpUserId.trim() !== '') {
+        const { data } = await (supabase.from('connection_requests') as any)
+          .select('id, sender_id, receiver_id, sender_type, status')
+          .or(`sender_id.eq.${slpUserId},receiver_id.eq.${slpUserId}`)
+          .eq('status', 'pending');
+        pendingRequests = data || [];
+      }
 
       const formatted: PatientCardData[] = (patientProfiles || []).map((p: any) => {
         let relationshipStatus: PatientCardData['relationshipStatus'] = 'available';
@@ -321,6 +337,7 @@ export const connectionService = {
     received: EnrichedConnectionRequest[];
     sent: EnrichedConnectionRequest[];
   }> {
+    if (!userId || !userId.trim()) return { received: [], sent: [] };
     try {
       const { data, error } = await (supabase.from('connection_requests') as any)
         .select('*')

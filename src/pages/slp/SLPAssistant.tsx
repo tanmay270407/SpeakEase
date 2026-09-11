@@ -17,6 +17,7 @@ export function SLPAssistant() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const suggestedQuestions = [
+    "Do I have any patient connection requests?",
     "Which patients need review?",
     "Who hasn't practiced this week?",
     "Show recent sessions."

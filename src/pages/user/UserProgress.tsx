@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
+import { CardSkeleton } from "../../components/ui/Skeleton";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
@@ -104,8 +105,15 @@ export function UserProgress() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent"></div>
+      <div className="space-y-6 max-w-5xl">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Progress Tracking</h1>
+          <p className="text-slate-500 text-sm">Longitudinal speech metrics and therapy practice trends.</p>
+        </div>
+        <div className="grid gap-6 md:grid-cols-2">
+          <CardSkeleton />
+          <CardSkeleton />
+        </div>
       </div>
     );
   }

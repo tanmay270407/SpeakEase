@@ -108,11 +108,27 @@ export interface Exercise {
   id: string;
   name: string;
   description: string | null;
-  duration: number | null;
-  approval_status: string | null;
-  approved_by: string | null;
+  instructions?: string | null;
+  category?: string | null;
+  status?: string | null;
+  duration?: number | null;
+  approval_status?: string | null;
+  approved_by?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type PatientExerciseStatus = 'enabled' | 'disabled';
+
+export interface PatientExercise {
+  id: string;
+  patient_id: string;
+  exercise_id: string;
+  assigned_by: string | null;
+  status: PatientExerciseStatus;
+  assigned_at: string;
+  updated_at: string;
+  exercises?: Exercise;
 }
 
 export interface ClinicianNote {
@@ -149,6 +165,40 @@ export interface Notification {
   message: string;
   is_read: boolean;
   created_at: string;
+}
+
+export interface SLPAvailability {
+  id: string;
+  slp_id: string;
+  day_of_week: number;
+  start_time: string;
+  end_time: string;
+  is_available: boolean;
+  slot_duration?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type LiveSessionStatus = 'pending' | 'confirmed' | 'rejected' | 'cancelled' | 'completed';
+
+export interface LiveSession {
+  id: string;
+  patient_id: string;
+  slp_id: string;
+  scheduled_start: string;
+  scheduled_end: string;
+  duration: number;
+  status: LiveSessionStatus;
+  requested_by: 'slp' | 'patient';
+  purpose?: string | null;
+  meeting_id?: string | null;
+  actual_started_at?: string | null;
+  actual_ended_at?: string | null;
+  actual_duration?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  patient?: Profile;
+  slp?: SLP;
 }
 
 export interface Database {
@@ -213,6 +263,16 @@ export interface Database {
         Row: ConnectionRequest;
         Insert: Omit<ConnectionRequest, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Omit<ConnectionRequest, 'id' | 'created_at' | 'updated_at'>>;
+      };
+      slp_availability: {
+        Row: SLPAvailability;
+        Insert: Omit<SLPAvailability, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<SLPAvailability, 'id' | 'created_at' | 'updated_at'>>;
+      };
+      live_sessions: {
+        Row: LiveSession;
+        Insert: Omit<LiveSession, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<LiveSession, 'id' | 'created_at' | 'updated_at'>>;
       };
     };
   };

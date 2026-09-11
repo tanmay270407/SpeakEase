@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, RotateCcw, ArrowLeft } from "lucide-react";
+import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, RotateCcw, ArrowLeft, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
 import { AudioPlayer } from "../../components/AudioPlayer";
+import { PracticeLevelMeter } from "../../components/PracticeLevelMeter";
 import { Button } from "../../components/ui/Button";
 import { supabase } from "../../lib/supabase";
 import { formatDuration } from "../../lib/utils";
@@ -21,6 +22,8 @@ export function ExerciseResultPage() {
   const [metrics, setMetrics] = useState<any>(null);
   const [observation, setObservation] = useState<any>(null);
   const [clinicianNote, setClinicianNote] = useState<any>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   // Sync exercise title from DB if available
   useEffect(() => {
@@ -51,37 +54,92 @@ export function ExerciseResultPage() {
     };
   }, [exerciseId]);
 
-  useEffect(() => {
-    async function loadResults() {
-      try {
-        setLoading(true);
-        if (!sessionId) throw new Error("No session ID provided.");
+  const loadResults = async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
+      if (!sessionId) throw new Error("No session ID provided.");
 
-        const [sessionRes, metricsRes, obsRes, noteRes] = await Promise.all([
-          (supabase.from("sessions") as any).select("*").eq("id", sessionId).single(),
-          (supabase.from("speech_metrics") as any).select("*").eq("session_id", sessionId).maybeSingle(),
-          (supabase.from("ai_observations") as any).select("*").eq("session_id", sessionId).maybeSingle(),
-          (supabase.from("clinician_notes") as any).select("*").eq("session_id", sessionId).order("created_at", { ascending: false }).limit(1).maybeSingle()
-        ]);
+      const [sessionRes, metricsRes, obsRes, noteRes] = await Promise.all([
+        (supabase.from("sessions") as any).select("*").eq("id", sessionId).single(),
+        (supabase.from("speech_metrics") as any).select("*").eq("session_id", sessionId).maybeSingle(),
+        (supabase.from("ai_observations") as any).select("*").eq("session_id", sessionId).maybeSingle(),
+        (supabase.from("clinician_notes") as any).select("*").eq("session_id", sessionId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+      ]);
 
-        if (sessionRes.error) throw sessionRes.error;
-        
-        setSession(sessionRes.data);
-        
-        if (metricsRes.data) setMetrics(metricsRes.data.metrics || metricsRes.data);
-        if (obsRes.data) setObservation(obsRes.data.observation_text || obsRes.data.observation);
-        if (noteRes.data) setClinicianNote(noteRes.data);
+      if (sessionRes.error) throw sessionRes.error;
+      
+      setSession(sessionRes.data);
+      
+      if (metricsRes.data) setMetrics(metricsRes.data.metrics || metricsRes.data);
+      if (obsRes.data) setObservation(obsRes.data.observation_text || obsRes.data.observation);
+      if (noteRes.data) setClinicianNote(noteRes.data);
 
-      } catch (err: any) {
-        console.error(err);
-        setError(err.message || "Failed to load exercise results.");
-      } finally {
-        setLoading(false);
-      }
+    } catch (err: any) {
+      console.error(err);
+      if (!silent) setError(err.message || "Failed to load exercise results.");
+    } finally {
+      if (!silent) setLoading(false);
     }
+  };
 
+  useEffect(() => {
     loadResults();
+
+    if (sessionId) {
+      const channel = supabase
+        .channel(`exercise_session_${sessionId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: `id=eq.${sessionId}` }, () => {
+          loadResults(true);
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
   }, [sessionId]);
+
+  // Auto-polling if exercise session is actively analyzing or saving in background
+  useEffect(() => {
+    const isAnalyzing = session?.analysis_status === 'analyzing' || session?.analysis_status === 'processing' || session?.analysis_status === 'saving';
+    if (!isAnalyzing) return;
+
+    const interval = setInterval(() => {
+      loadResults(true);
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [session?.analysis_status, sessionId]);
+
+  const handleRetryAnalysis = async () => {
+    if (!sessionId) return;
+    try {
+      setRetrying(true);
+      setRetryError(null);
+      const { data: { session: authSession } } = await supabase.auth.getSession();
+      if (!authSession?.access_token) throw new Error("Not authenticated");
+
+      const response = await fetch(`/api/sessions/${sessionId}/retry-analysis`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${authSession.access_token}`,
+          "Content-Type": "application/json"
+        }
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "Speech analysis is temporarily unavailable.");
+      }
+
+      await loadResults();
+    } catch (err: any) {
+      console.error("Retry analysis error:", err);
+      setRetryError(err.message || "Speech analysis is temporarily unavailable.");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const handleAudioDurationLoaded = (audioDur: number) => {
     if (audioDur > 0) {
@@ -103,8 +161,9 @@ export function ExerciseResultPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-600 border-t-transparent"></div>
+      <div className="flex flex-col items-center justify-center min-h-[400px] space-y-4">
+        <Loader2 className="h-8 w-8 animate-spin text-indigo-600" />
+        <p className="text-sm text-slate-500">Loading exercise results...</p>
       </div>
     );
   }
@@ -131,8 +190,45 @@ export function ExerciseResultPage() {
     );
   }
 
+  const isAnalyzing = retrying || session?.analysis_status === 'analyzing' || session?.analysis_status === 'processing' || session?.analysis_status === 'saving';
+  const hasAnalysisCompleted = !isAnalyzing && (metrics !== null || session?.analysis_status === 'completed');
+  const isAnalysisFailed = !isAnalyzing && !hasAnalysisCompleted;
+
+  // Active Analyzing State (simple & clear, no fake Practice Level)
+  if (isAnalyzing) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 px-4 space-y-8 animate-in fade-in duration-200">
+        <div className="flex flex-col items-center text-center space-y-4">
+          <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center ring-8 ring-indigo-50/50">
+            <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+          </div>
+          <div className="space-y-1">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+              Analysis in progress...
+            </h1>
+            <p className="text-slate-500 text-sm max-w-md">
+              Analyzing exercise recording, calculating speech metrics, and updating your Practice Level.
+            </p>
+          </div>
+        </div>
+
+        <Card className="border-slate-200 shadow-sm bg-slate-50/50">
+          <CardContent className="p-6 text-center space-y-3">
+            <div className="flex items-center justify-center gap-2 text-xs font-mono text-slate-600">
+              <Clock className="w-4 h-4 text-slate-400" />
+              <span>Recorded Duration: {session ? formatDuration(session.duration) : "00:00"}</span>
+            </div>
+            <p className="text-xs text-slate-400">
+              This typically takes a few seconds. Results will update automatically.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-3xl mx-auto py-8 px-4 space-y-8">
+    <div className="max-w-3xl mx-auto py-8 px-4 space-y-8 animate-in fade-in duration-200">
       {/* Exercise Navigation Breadcrumb */}
       <div className="flex items-center justify-between">
         <Link 
@@ -160,15 +256,25 @@ export function ExerciseResultPage() {
 
       {/* Completion Header */}
       <div className="flex flex-col items-center text-center space-y-4 pb-2">
-        <div className="bg-emerald-50 w-16 h-16 rounded-full flex items-center justify-center ring-8 ring-emerald-50/50">
-          <CheckCircle className="w-8 h-8 text-emerald-600" />
+        <div className={`w-16 h-16 rounded-full flex items-center justify-center ${
+          hasAnalysisCompleted 
+            ? 'bg-emerald-50 text-emerald-600 ring-8 ring-emerald-50/50' 
+            : 'bg-amber-50 text-amber-600 ring-8 ring-amber-50/50'
+        }`}>
+          {hasAnalysisCompleted ? (
+            <CheckCircle className="w-8 h-8 text-emerald-600" />
+          ) : (
+            <AlertCircle className="w-8 h-8 text-amber-600" />
+          )}
         </div>
         <div className="space-y-1">
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">
             {exercise.title} - Session Complete
           </h1>
           <p className="text-slate-500 text-sm">
-            Your exercise recording has been analyzed and saved to your clinical history.
+            {hasAnalysisCompleted 
+              ? "Your exercise recording has been analyzed and saved to your clinical history."
+              : "Your voice recording was safely saved, but automated speech analysis could not be completed."}
           </p>
         </div>
       </div>
@@ -200,14 +306,19 @@ export function ExerciseResultPage() {
             </div>
             <div>
               <p className="text-sm font-medium text-slate-500">Speech Rate</p>
-              <p className="text-2xl font-semibold text-slate-900">{metrics?.speech_rate ?? "--"} <span className="text-sm font-normal text-slate-500">wpm</span></p>
+              <p className="text-2xl font-semibold text-slate-900">{metrics?.speech_rate ? Math.round(Number(metrics.speech_rate)) : "--"} <span className="text-sm font-normal text-slate-500">wpm</span></p>
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Fluency Metrics Breakdown */}
-      {metrics && (
+      {/* Dynamic Practice Level Meter: Rendered only after real analysis is completed */}
+      {hasAnalysisCompleted && metrics && (
+        <PracticeLevelMeter metrics={metrics} practiceLevel={session?.practice_level} />
+      )}
+
+      {/* Fluency Metrics Breakdown: Rendered only after real analysis is completed */}
+      {hasAnalysisCompleted && metrics && (
         <Card className="border-slate-200 shadow-sm">
           <CardHeader>
             <CardTitle className="text-lg">Fluency Metrics</CardTitle>
@@ -216,15 +327,15 @@ export function ExerciseResultPage() {
           <CardContent>
             <div className="divide-y divide-slate-100">
               <div className="flex items-center justify-between py-3">
-                <span className="text-slate-600">Possible repetitions</span>
+                <span className="text-slate-600 text-sm">Possible repetitions</span>
                 <span className="font-semibold text-slate-900">{metrics.repetitions ?? 0}</span>
               </div>
               <div className="flex items-center justify-between py-3">
-                <span className="text-slate-600">Pauses</span>
+                <span className="text-slate-600 text-sm">Pauses</span>
                 <span className="font-semibold text-slate-900">{metrics.pauses ?? 0}</span>
               </div>
               <div className="flex items-center justify-between py-3">
-                <span className="text-slate-600">Possible prolongations</span>
+                <span className="text-slate-600 text-sm">Possible prolongations</span>
                 <span className="font-semibold text-slate-900">{metrics.prolongations ?? 0}</span>
               </div>
             </div>
@@ -241,7 +352,7 @@ export function ExerciseResultPage() {
       />
 
       {/* AI Clinical Observations */}
-      {observation && (
+      {hasAnalysisCompleted && observation && (
         <Card className="border-slate-200 shadow-sm">
           <CardHeader>
             <CardTitle className="text-lg text-slate-900">AI Observation</CardTitle>

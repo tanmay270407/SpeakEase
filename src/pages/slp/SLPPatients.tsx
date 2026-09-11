@@ -5,6 +5,8 @@ import { Button } from "../../components/ui/Button";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { connectionService } from "../../services/connectionService";
+import { SLPBookSessionModal } from "../../components/slp/SLPBookSessionModal";
+import { TableRowSkeleton } from "../../components/ui/Skeleton";
 import {
   Users,
   ChevronRight,
@@ -15,6 +17,7 @@ import {
   Calendar,
   ShieldCheck,
   UserX,
+  Video
 } from "lucide-react";
 
 export function SLPPatients() {
@@ -23,6 +26,10 @@ export function SLPPatients() {
   const [patients, setPatients] = useState<any[]>([]);
   const [slpId, setSlpId] = useState<string | null>(null);
   const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
+
+  // Booking modal state
+  const [bookingPatientId, setBookingPatientId] = useState<string | null>(null);
+  const [isBookModalOpen, setIsBookModalOpen] = useState(false);
 
   const loadPatients = async () => {
     try {
@@ -84,8 +91,18 @@ export function SLPPatients() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-teal-600 border-t-transparent"></div>
+      <div className="space-y-6 max-w-5xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">My Patients</h1>
+            <p className="text-slate-500 text-sm mt-1">
+              Manage your connected patients and review their practice progress.
+            </p>
+          </div>
+        </div>
+        <Card className="border-slate-200 shadow-sm p-2">
+          <TableRowSkeleton count={4} />
+        </Card>
       </div>
     );
   }
@@ -184,11 +201,21 @@ export function SLPPatients() {
                   </Link>
 
                   <div className="flex items-center gap-2 pl-3">
+                    <button
+                      onClick={() => {
+                        setBookingPatientId(patient.id);
+                        setIsBookModalOpen(true);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-2xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Video className="w-3.5 h-3.5" />
+                      Book Live Session
+                    </button>
                     <Link
                       to={`/slp/patients/${patient.id}`}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium text-teal-700 bg-teal-50 hover:bg-teal-100 transition-colors hidden sm:inline-flex items-center gap-1"
                     >
-                      View Sessions
+                      View Profile
                       <ChevronRight className="w-3.5 h-3.5" />
                     </Link>
                   </div>
@@ -198,6 +225,15 @@ export function SLPPatients() {
           )}
         </CardContent>
       </Card>
+
+      <SLPBookSessionModal
+        isOpen={isBookModalOpen}
+        onClose={() => {
+          setIsBookModalOpen(false);
+          setBookingPatientId(null);
+        }}
+        preselectedPatientId={bookingPatientId}
+      />
     </div>
   );
 }
