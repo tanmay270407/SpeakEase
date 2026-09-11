@@ -106,16 +106,23 @@ const upload = multer({ storage: multer.memoryStorage() });
 // Configure Gemini
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
 
+const DEFAULT_SUPABASE_URL = "https://dbpcjfhrswhphitltpgb.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRicGNqZmhyc3docGhpdGx0cGdiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNDgzMTIsImV4cCI6MjEwNDYyNDMxMn0.kLOi2n9CzVT632ooUyqDiNtseLxLTI_yg2Te2As457o";
+
 // Helper to create Supabase client using the user's token
 const getSupabaseClient = (req: express.Request) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return null;
   const token = authHeader.replace("Bearer ", "");
   const rawUrl = process.env.VITE_SUPABASE_URL || "";
-  const supabaseUrl = rawUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
+  const cleanedUrl = rawUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
+  const supabaseUrl = (cleanedUrl && !cleanedUrl.includes("placeholder")) ? cleanedUrl : DEFAULT_SUPABASE_URL;
+  const envKey = process.env.VITE_SUPABASE_ANON_KEY || "";
+  const supabaseAnonKey = (envKey && !envKey.includes("placeholder")) ? envKey : DEFAULT_SUPABASE_ANON_KEY;
+
   return createClient(
     supabaseUrl,
-    process.env.VITE_SUPABASE_ANON_KEY || "",
+    supabaseAnonKey,
     {
       global: {
         headers: { Authorization: `Bearer ${token}` }
@@ -139,8 +146,11 @@ app.post("/api/upload-avatar", upload.single("avatar"), async (req, res) => {
     const fileName = `user_${userId}_${Date.now()}${ext}`;
 
     const rawUrl = process.env.VITE_SUPABASE_URL || "";
-    const supabaseUrl = rawUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
-    const supabase = createClient(supabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || "");
+    const cleanedUrl = rawUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/+$/, "");
+    const supabaseUrl = (cleanedUrl && !cleanedUrl.includes("placeholder")) ? cleanedUrl : DEFAULT_SUPABASE_URL;
+    const envKey = process.env.VITE_SUPABASE_ANON_KEY || "";
+    const supabaseAnonKey = (envKey && !envKey.includes("placeholder")) ? envKey : DEFAULT_SUPABASE_ANON_KEY;
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
     const { data, error } = await supabase.storage
       .from("avatars")
