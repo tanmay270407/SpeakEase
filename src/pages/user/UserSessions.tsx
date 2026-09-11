@@ -5,6 +5,7 @@ import { Badge } from "../../components/ui/Badge";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { AlertCircle, Clock, ChevronRight } from "lucide-react";
+import { formatDuration } from "../../lib/utils";
 
 export function UserSessions() {
   const { profile } = useAuth();
@@ -39,12 +40,6 @@ export function UserSessions() {
 
     loadSessions();
   }, [profile?.id]);
-
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -93,7 +88,7 @@ export function UserSessions() {
               {sessions.map((session) => (
                 <Link 
                   key={session.id} 
-                  to={`/practice/${session.id}`}
+                  to={session.exercise_id ? `/exercises/${session.exercise_id}/results/${session.id}` : `/practice/${session.id}`}
                   className="flex items-center justify-between p-4 hover:bg-slate-50 transition-colors"
                 >
                   <div className="space-y-1">
@@ -104,7 +99,7 @@ export function UserSessions() {
                       <span>{new Date(session.created_at).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" />
-                        {formatTime(session.duration)}
+                        {formatDuration(session.duration)}
                       </span>
                     </div>
                   </div>

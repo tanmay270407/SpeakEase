@@ -23,6 +23,7 @@
     "corsair": "^0.1.129",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "get-blob-duration": "^1.2.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "multer": "^2.3.0",

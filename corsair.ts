@@ -25,5 +25,7 @@ export const corsairClient = createCorsair({
   },
 });
 
+(corsairClient as any).corsair = corsairClient;
+
 export const corsair = corsairClient;
 export default corsairClient;

@@ -1,14 +1,18 @@
 import { Outlet, NavLink, Link, useNavigate } from "react-router-dom";
-import { Mic2, LayoutDashboard, Users, Calendar, List, Settings, Menu, Sparkles, LogOut, Activity } from "lucide-react";
+import { Mic2, LayoutDashboard, Users, Calendar, List, Settings, Menu, Sparkles, LogOut, Activity, UserPlus, Inbox } from "lucide-react";
 import { useState } from "react";
 import { cn } from "../lib/utils";
 import { Button } from "../components/ui/Button";
 import { useAuth } from "../contexts/AuthContext";
 import { DemoRoleSwitcher } from "../components/DemoRoleSwitcher";
+import { UserProfileMenu } from "../components/UserProfileMenu";
+import { Avatar } from "../components/Avatar";
 
 const navItems = [
   { name: "Dashboard", to: "/slp", icon: LayoutDashboard },
-  { name: "Patients", to: "/slp/patients", icon: Users },
+  { name: "My Patients", to: "/slp/patients", icon: Users },
+  { name: "Find Patients", to: "/slp/find-patients", icon: UserPlus },
+  { name: "Requests", to: "/slp/requests", icon: Inbox },
   { name: "Sessions", to: "/slp/sessions", icon: Calendar },
   { name: "Exercises", to: "/slp/exercises", icon: List },
   { name: "Assistant", to: "/slp/assistant", icon: Sparkles },
@@ -59,10 +63,13 @@ export function SLPLayout() {
         </nav>
         <div className="p-4 border-t border-slate-100 space-y-4">
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className="h-8 w-8 rounded-full bg-teal-100 flex items-center justify-center text-teal-700 font-semibold text-sm uppercase">
-              {profile?.full_name?.charAt(0) || 'S'}
-            </div>
-            <div className="flex flex-col">
+            <Avatar
+              src={profile?.avatar_url}
+              name={profile?.full_name}
+              size="sm"
+              theme="teal"
+            />
+            <div className="flex flex-col min-w-0">
               <span className="text-sm font-medium truncate max-w-[120px]">{profile?.full_name || 'SLP'}</span>
               <span className="text-xs text-slate-500">Clinician</span>
             </div>
@@ -74,16 +81,27 @@ export function SLPLayout() {
         </div>
       </aside>
 
-      {/* Mobile Topbar */}
+      {/* Main Container with Topbar */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 lg:hidden">
-          <Link to="/slp" className="flex items-center gap-2 font-semibold tracking-tight text-lg">
-            <Mic2 className="h-5 w-5 text-teal-600" />
-            <span>SpeakEase</span>
-          </Link>
-          <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
-            <Menu className="h-5 w-5" />
-          </Button>
+        <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 lg:px-8">
+          <div className="flex items-center gap-3 lg:hidden">
+            <Button variant="ghost" size="icon" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
+              <Menu className="h-5 w-5" />
+            </Button>
+            <Link to="/slp" className="flex items-center gap-2 font-semibold tracking-tight text-lg">
+              <Mic2 className="h-5 w-5 text-teal-600" />
+              <span>SpeakEase</span>
+            </Link>
+          </div>
+
+          <div className="hidden lg:block text-xs font-medium text-slate-400">
+            Clinician Portal
+          </div>
+
+          {/* Top-Right Circular Profile Avatar */}
+          <div className="flex items-center gap-4">
+            <UserProfileMenu />
+          </div>
         </header>
 
         {/* Mobile Demo Switcher Bar */}

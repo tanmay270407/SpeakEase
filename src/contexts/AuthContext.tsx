@@ -11,6 +11,7 @@ interface AuthContextType {
   isDemoAccount: boolean;
   demoRole: 'USER' | 'SLP';
   setDemoRole: (role: 'USER' | 'SLP') => void;
+  refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -22,6 +23,7 @@ const AuthContext = createContext<AuthContextType>({
   isDemoAccount: false,
   demoRole: 'USER',
   setDemoRole: () => {},
+  refreshProfile: async () => {},
   signOut: async () => {},
 });
 
@@ -98,9 +100,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           const metaName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'User';
           setProfile({
             id: currentUser.id,
+            user_id: currentUser.id,
             email: currentUser.email || '',
             full_name: metaName,
             role: metaRole,
+            phone: currentUser.user_metadata?.phone || null,
             created_at: currentUser.created_at || new Date().toISOString(),
             updated_at: currentUser.updated_at || new Date().toISOString(),
           });
@@ -112,6 +116,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       console.error('Unexpected error fetching profile:', err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const refreshProfile = async () => {
+    if (user?.id) {
+      await fetchProfile(user.id);
+    } else {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user?.id) {
+        await fetchProfile(session.user.id);
+      }
     }
   };
 
@@ -137,6 +152,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         isDemoAccount,
         demoRole,
         setDemoRole,
+        refreshProfile,
         signOut,
       }}
     >

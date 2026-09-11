@@ -1,6 +1,6 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { Mic2, User, Stethoscope, ArrowRight, CheckCircle2, Sparkles, LogOut } from "lucide-react";
+import { Mic2, User, Stethoscope, ArrowRight, CheckCircle2, Sparkles, LogOut, ShieldCheck } from "lucide-react";
 import { Button } from "../components/ui/Button";
 
 export function DemoRoleSelectPage() {
@@ -153,13 +153,23 @@ export function DemoRoleSelectPage() {
         <p className="text-xs text-slate-500">
           Demo Presentation Account: <span className="font-semibold text-slate-700">admin@gmail.com</span>
         </p>
-        <button
-          onClick={handleLogout}
-          className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-800 transition-colors"
-        >
-          <LogOut className="h-3.5 w-3.5" />
-          Sign out of demo account
-        </button>
+        <div className="flex items-center justify-center gap-4 text-xs">
+          <Link
+            to="/admin/users"
+            className="inline-flex items-center gap-1.5 text-purple-700 hover:text-purple-900 font-medium hover:underline underline-offset-2"
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Admin User Management
+          </Link>
+          <span className="text-slate-300">•</span>
+          <button
+            onClick={handleLogout}
+            className="inline-flex items-center gap-1.5 text-slate-500 hover:text-slate-800 transition-colors"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            Sign out of demo account
+          </button>
+        </div>
       </div>
     </div>
   );

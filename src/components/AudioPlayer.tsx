@@ -1,19 +1,30 @@
 import { useState, useEffect, useRef } from 'react';
 import { Play, Pause, AlertCircle, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { formatDuration } from '../lib/utils';
+import { getAuthoritativeAudioDuration } from '../lib/audioDuration';
 
 interface AudioPlayerProps {
   sessionId: string;
+  initialDuration?: number;
+  onDurationLoaded?: (duration: number) => void;
+  onError?: (error: string) => void;
 }
 
-export function AudioPlayer({ sessionId }: AudioPlayerProps) {
+export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onError }: AudioPlayerProps) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(initialDuration || 0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (initialDuration && initialDuration > 0 && duration !== initialDuration) {
+      setDuration(initialDuration);
+    }
+  }, [initialDuration]);
 
   useEffect(() => {
     let isMounted = true;
@@ -32,10 +43,10 @@ export function AudioPlayer({ sessionId }: AudioPlayerProps) {
 
         if (!response.ok) {
           if (response.status === 404) {
-            throw new Error("Audio recording not found or was not saved");
+            throw new Error("Audio could not be saved.");
           }
           if (response.status === 403) throw new Error("Unauthorized to access this recording");
-          throw new Error("Failed to load audio");
+          throw new Error("Audio could not be saved.");
         }
 
         const blob = await response.blob();
@@ -43,11 +54,25 @@ export function AudioPlayer({ sessionId }: AudioPlayerProps) {
         
         if (isMounted) {
           setAudioUrl(url);
+          // Derive authoritative media duration directly from the audio blob
+          getAuthoritativeAudioDuration(blob).then((exactDur) => {
+            if (isMounted && exactDur > 0) {
+              setDuration(exactDur);
+              if (onDurationLoaded) {
+                onDurationLoaded(exactDur);
+              }
+            }
+          }).catch((err) => {
+            console.warn("Failed to extract blob duration in player:", err);
+          });
           setError(null);
         }
       } catch (err: any) {
         if (isMounted) {
           setError(err.message);
+          if (onError) {
+            onError(err.message);
+          }
         }
       } finally {
         if (isMounted) {
@@ -81,9 +106,24 @@ export function AudioPlayer({ sessionId }: AudioPlayerProps) {
     setProgress(audioRef.current.currentTime);
   };
 
-  const handleLoadedMetadata = () => {
+  const updateLoadedDuration = () => {
     if (!audioRef.current) return;
-    setDuration(audioRef.current.duration);
+    const dur = audioRef.current.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      const rounded = dur < 1 ? 1 : Math.round(dur);
+      setDuration(rounded);
+      if (onDurationLoaded) {
+        onDurationLoaded(rounded);
+      }
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    updateLoadedDuration();
+  };
+
+  const handleDurationChange = () => {
+    updateLoadedDuration();
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -91,13 +131,6 @@ export function AudioPlayer({ sessionId }: AudioPlayerProps) {
     const time = Number(e.target.value);
     audioRef.current.currentTime = time;
     setProgress(time);
-  };
-
-  const formatTime = (time: number) => {
-    if (isNaN(time)) return "00:00";
-    const m = Math.floor(time / 60);
-    const s = Math.floor(time % 60);
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
   if (loading) {
@@ -147,8 +180,8 @@ export function AudioPlayer({ sessionId }: AudioPlayerProps) {
             aria-label="Seek recording"
           />
           <div className="flex justify-between text-xs text-slate-500 font-medium mt-1">
-            <span>{formatTime(progress)}</span>
-            <span>{formatTime(duration)}</span>
+            <span>{formatDuration(progress)}</span>
+            <span>{formatDuration(duration)}</span>
           </div>
         </div>
       </div>
@@ -158,6 +191,7 @@ export function AudioPlayer({ sessionId }: AudioPlayerProps) {
         src={audioUrl}
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
+        onDurationChange={handleDurationChange}
         onEnded={() => setIsPlaying(false)}
         className="hidden"
       />

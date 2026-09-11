@@ -1,14 +1,52 @@
 export type UserRole = 'USER' | 'SLP' | 'ADMIN';
 export type ReviewStatus = 'NOT_REVIEWED' | 'READY_FOR_REVIEW' | 'REVIEWED';
 export type AssignmentStatus = 'PENDING' | 'ACTIVE' | 'INACTIVE';
+export type ConnectionRequestStatus = 'pending' | 'accepted' | 'rejected' | 'cancelled';
+export type ConnectionUserType = 'PATIENT' | 'SLP';
+
+export interface ConnectionRequest {
+  id: string;
+  sender_id: string;
+  receiver_id: string;
+  sender_type: ConnectionUserType;
+  receiver_type: ConnectionUserType;
+  status: ConnectionRequestStatus;
+  created_at: string;
+  updated_at: string;
+}
 
 export interface Profile {
   id: string;
+  user_id?: string;
   full_name: string;
   email: string;
   role: UserRole;
+  phone: string | null;
+  avatar_url?: string | null;
+  bio?: string | null;
+  practice_goal?: string | null;
+  notification_preferences?: {
+    email_alerts?: boolean;
+    session_reminders?: boolean;
+    clinical_updates?: boolean;
+  } | null;
+  privacy_settings?: {
+    share_metrics_with_slp?: boolean;
+    allow_audio_analytics?: boolean;
+  } | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AdminUser {
+  id: string;
+  user_id: string;
+  full_name: string;
+  email: string;
+  role: UserRole;
+  phone: string | null;
+  created_at: string;
+  last_sign_in_at: string | null;
 }
 
 export interface SLP {
@@ -21,6 +59,10 @@ export interface SLP {
   organization: string | null;
   availability_status: string | null;
   profile_image: string | null;
+  avatar_url?: string | null;
+  bio?: string | null;
+  qualification?: string | null;
+  years_of_experience?: string | null;
   phone: string | null;
   license_number: string | null;
   created_at: string;
@@ -98,6 +140,17 @@ export interface AuditLog {
   created_at: string;
 }
 
+export interface Notification {
+  id: string;
+  user_id: string;
+  session_id: string | null;
+  type: string;
+  title: string;
+  message: string;
+  is_read: boolean;
+  created_at: string;
+}
+
 export interface Database {
   public: {
     Tables: {
@@ -150,6 +203,16 @@ export interface Database {
         Row: AuditLog;
         Insert: Omit<AuditLog, 'id' | 'created_at'>;
         Update: Partial<Omit<AuditLog, 'id' | 'created_at'>>;
+      };
+      notifications: {
+        Row: Notification;
+        Insert: Omit<Notification, 'id' | 'created_at'>;
+        Update: Partial<Omit<Notification, 'id' | 'created_at'>>;
+      };
+      connection_requests: {
+        Row: ConnectionRequest;
+        Insert: Omit<ConnectionRequest, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<Omit<ConnectionRequest, 'id' | 'created_at' | 'updated_at'>>;
       };
     };
   };

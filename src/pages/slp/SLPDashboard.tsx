@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../..
 import { Badge } from "../../components/ui/Badge";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
-import { Users, FileText, Activity, Clock, ChevronRight, AlertTriangle, Search } from "lucide-react";
+import { Users, FileText, Activity, Clock, ChevronRight, AlertTriangle, Search, UserPlus, Inbox } from "lucide-react";
+import { formatDuration } from "../../lib/utils";
 
 export function SLPDashboard() {
   const { profile } = useAuth();
@@ -12,7 +13,9 @@ export function SLPDashboard() {
   
   const [slpId, setSlpId] = useState<string | null>(null);
   const [patientCount, setPatientCount] = useState(0);
+  const [pendingRequestsCount, setPendingRequestsCount] = useState(0);
   const [sessionCount, setSessionCount] = useState(0);
+  const [totalPracticeSeconds, setTotalPracticeSeconds] = useState(0);
   const [needsReviewSessions, setNeedsReviewSessions] = useState<any[]>([]);
   const [inactivePatients, setInactivePatients] = useState<any[]>([]);
   const [recentSessions, setRecentSessions] = useState<any[]>([]);
@@ -48,6 +51,7 @@ export function SLPDashboard() {
             const dashboardData = await corsairRes.json();
             setPatientCount(dashboardData.patientCount);
             setSessionCount(dashboardData.sessionCount);
+            setTotalPracticeSeconds(dashboardData.totalPracticeSeconds || 0);
             setNeedsReviewSessions(dashboardData.needsReviewSessions);
             setInactivePatients(dashboardData.inactivePatients || []);
             setRecentSessions(dashboardData.recentSessions || []);
@@ -61,27 +65,38 @@ export function SLPDashboard() {
           setCorsairError(cErr.message);
         }
 
-        // Fallback: Get Patients Count from Supabase
+        // Fallback: Get Active Patients Count from Supabase
         const { count: pCount } = await (supabase.from('patient_assignments') as any)
           .select('id', { count: 'exact' })
-          .eq('slp_id', slpData.id);
+          .eq('slp_id', slpData.id)
+          .eq('status', 'ACTIVE');
         
         setPatientCount(pCount || 0);
 
-        // Get Patients IDs to fetch sessions
+        // Check pending received requests
+        const { count: reqCount } = await (supabase.from('connection_requests') as any)
+          .select('id', { count: 'exact' })
+          .eq('receiver_id', profile.id)
+          .eq('status', 'pending');
+        setPendingRequestsCount(reqCount || 0);
+
+        // Get Active Patients IDs to fetch sessions
         const { data: assignments } = await (supabase.from('patient_assignments') as any)
           .select('patient_id')
-          .eq('slp_id', slpData.id);
+          .eq('slp_id', slpData.id)
+          .eq('status', 'ACTIVE');
 
         const patientIds = assignments?.map((a: any) => a.patient_id) || [];
 
         if (patientIds.length > 0) {
-          // Get Total Sessions
-          const { count: sCount } = await (supabase.from('sessions') as any)
-            .select('id', { count: 'exact' })
+          // Get Total Sessions and sum duration
+          const { data: allPatientSessions } = await (supabase.from('sessions') as any)
+            .select('id, duration')
             .in('user_id', patientIds);
           
-          setSessionCount(sCount || 0);
+          setSessionCount(allPatientSessions?.length || 0);
+          const totalSec = (allPatientSessions || []).reduce((acc: number, s: any) => acc + (Number(s.duration) || 0), 0);
+          setTotalPracticeSeconds(totalSec);
 
           // Get Sessions needing review
           const { data: reviewSessions } = await (supabase.from('sessions') as any)
@@ -121,18 +136,39 @@ export function SLPDashboard() {
 
   return (
     <div className="space-y-8 max-w-5xl">
-      <div className="flex items-center justify-between space-y-1">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">SLP Dashboard</h1>
           <p className="text-slate-500 text-sm">Overview of your assigned patients and sessions.</p>
         </div>
-        <Link 
-          to="/slp/assistant" 
-          className="flex items-center gap-2 text-sm px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md transition-colors"
-        >
-          <Search className="w-4 h-4" />
-          Clinical Assistant
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link 
+            to="/slp/find-patients" 
+            className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-md font-medium shadow-sm transition-colors"
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            Find Patients
+          </Link>
+          <Link 
+            to="/slp/requests" 
+            className="relative flex items-center gap-1.5 text-xs px-3.5 py-2 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 rounded-md font-medium shadow-sm transition-colors"
+          >
+            <Inbox className="w-3.5 h-3.5 text-teal-600" />
+            Requests
+            {pendingRequestsCount > 0 && (
+              <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-white">
+                {pendingRequestsCount}
+              </span>
+            )}
+          </Link>
+          <Link 
+            to="/slp/assistant" 
+            className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md font-medium shadow-sm transition-colors"
+          >
+            <Search className="w-3.5 h-3.5" />
+            Clinical Assistant
+          </Link>
+        </div>
       </div>
 
       {corsairError && (
@@ -150,8 +186,8 @@ export function SLPDashboard() {
         </div>
       )}
 
-      <div className="grid gap-6 md:grid-cols-3">
-        <Card className="bg-white border-slate-200">
+      <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-4">
+        <Card className="bg-white border-slate-200 shadow-sm">
           <CardContent className="pt-6">
             <div className="flex items-center gap-4">
               <div className="p-3 bg-teal-50 text-teal-600 rounded-lg">
@@ -165,7 +201,7 @@ export function SLPDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="bg-white border-slate-200">
+        <Card className="bg-white border-slate-200 shadow-sm">
           <CardContent className="pt-6">
             <div className="flex items-center gap-4">
               <div className="p-3 bg-indigo-50 text-indigo-600 rounded-lg">
@@ -179,7 +215,21 @@ export function SLPDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="bg-white border-slate-200">
+        <Card className="bg-white border-slate-200 shadow-sm">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-purple-50 text-purple-600 rounded-lg">
+                <Clock className="w-6 h-6" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-500">Practice Time</p>
+                <p className="text-2xl font-bold text-slate-900">{formatDuration(totalPracticeSeconds)}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-white border-slate-200 shadow-sm">
           <CardContent className="pt-6">
             <div className="flex items-center gap-4">
               <div className="p-3 bg-amber-50 text-amber-600 rounded-lg">
@@ -221,7 +271,7 @@ export function SLPDashboard() {
                         <span>{new Date(session.created_at).toLocaleDateString()}</span>
                         <span className="flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          {Math.floor(session.duration / 60)}:{String(session.duration % 60).padStart(2, '0')}
+                          {formatDuration(session.duration)}
                         </span>
                       </div>
                     </div>
@@ -260,6 +310,10 @@ export function SLPDashboard() {
                       </div>
                       <div className="flex items-center gap-3 text-sm text-slate-500">
                         <span>{new Date(session.created_at).toLocaleDateString()}</span>
+                        <span className="flex items-center gap-1 font-mono text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded">
+                          <Clock className="w-3 h-3 text-slate-400" />
+                          {formatDuration(session.duration)}
+                        </span>
                       </div>
                     </div>
                     <ChevronRight className="w-5 h-5 text-slate-400" />

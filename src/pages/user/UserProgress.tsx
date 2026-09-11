@@ -3,7 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../..
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
-import { AlertCircle, Activity, Info } from "lucide-react";
+import { AlertCircle, Activity, Info, Clock } from "lucide-react";
+import { formatDuration } from "../../lib/utils";
 
 export function UserProgress() {
   const { profile } = useAuth();
@@ -51,11 +52,31 @@ export function UserProgress() {
     loadProgress();
   }, [profile?.id]);
 
-  const { activityData, observationData } = useMemo(() => {
+  const { activityData, observationData, weeklySeconds, monthlySeconds, totalSeconds } = useMemo(() => {
+    const now = Date.now();
+    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+
+    let weekly = 0;
+    let monthly = 0;
+    let total = 0;
+
+    for (const s of sessions) {
+      const dur = Number(s.duration) || 0;
+      total += dur;
+      const createdAtTime = new Date(s.created_at).getTime();
+      if (createdAtTime >= sevenDaysAgo) {
+        weekly += dur;
+      }
+      if (createdAtTime >= thirtyDaysAgo) {
+        monthly += dur;
+      }
+    }
+
     // Process for Practice Activity (Duration over time)
     const actData = sessions.map(s => ({
       date: new Date(s.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-      minutes: Math.round(s.duration / 60 * 10) / 10
+      minutes: Math.round(((Number(s.duration) || 0) / 60) * 10) / 10
     }));
 
     // Process for Speech Observations (Repetitions, Pauses)
@@ -72,7 +93,13 @@ export function UserProgress() {
       })
       .filter(Boolean);
 
-    return { activityData: actData, observationData: obsData };
+    return { 
+      activityData: actData, 
+      observationData: obsData,
+      weeklySeconds: weekly,
+      monthlySeconds: monthly,
+      totalSeconds: total
+    };
   }, [sessions, metrics]);
 
   if (loading) {
@@ -102,9 +129,57 @@ export function UserProgress() {
       <div className="rounded-md bg-slate-50 p-4 border border-slate-200 flex gap-3 text-sm text-slate-600">
         <Info className="h-5 w-5 text-slate-400 flex-shrink-0" />
         <p>
-          These charts represent automated observations of your practice activity. 
-          <span className="font-medium text-slate-700"> They are not medical diagnoses and do not explicitly prove clinical improvement.</span> Always consult your SLP for clinical evaluation.
+          These metrics and charts represent real audio practice sessions. 
+          <span className="font-medium text-slate-700"> Practice times reflect the exact duration of your recorded speech.</span> Always consult your SLP for clinical evaluation.
         </p>
+      </div>
+
+      {/* Real Recording Practice Time Summary */}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Card className="border-slate-200 shadow-sm">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-md">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Weekly Practice</p>
+                <p className="text-2xl font-bold text-slate-900">{formatDuration(weeklySeconds)}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mt-3">Sum of actual audio recordings (last 7 days)</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 shadow-sm">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-md">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Monthly Practice</p>
+                <p className="text-2xl font-bold text-slate-900">{formatDuration(monthlySeconds)}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mt-3">Sum of actual audio recordings (last 30 days)</p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-200 shadow-sm">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-amber-50 text-amber-600 rounded-md">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">Total Practice</p>
+                <p className="text-2xl font-bold text-slate-900">{formatDuration(totalSeconds)}</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-500 mt-3">All-time recorded audio duration</p>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">

@@ -9,6 +9,7 @@ import { UserRole } from "../../types/supabase";
 export function SignupPage() {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [accountType, setAccountType] = useState<UserRole>("USER");
   const [loading, setLoading] = useState(false);
@@ -23,6 +24,8 @@ export function SignupPage() {
     setError(null);
     setInfoMessage(null);
 
+    const formattedPhone = phone.trim() || null;
+
     try {
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
@@ -31,6 +34,7 @@ export function SignupPage() {
           data: {
             full_name: fullName,
             role: accountType,
+            phone: formattedPhone,
           }
         }
       });
@@ -48,9 +52,11 @@ export function SignupPage() {
         const { error: profileError } = await (supabase.from('profiles') as any).upsert([
           {
             id: data.user.id,
+            user_id: data.user.id,
             email: data.user.email,
             full_name: fullName,
             role: accountType,
+            phone: formattedPhone,
           }
         ]);
 
@@ -63,6 +69,7 @@ export function SignupPage() {
               user_id: data.user.id,
               email: data.user.email,
               full_name: fullName,
+              phone: formattedPhone,
             }
           ]);
           if (slpError) console.warn("SLP profile note:", slpError.message);
@@ -142,6 +149,16 @@ export function SignupPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required 
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="phone" className="text-sm font-medium text-slate-900">Phone Number</label>
+              <Input 
+                id="phone" 
+                type="tel" 
+                placeholder="+1 (555) 000-0000" 
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
               />
             </div>
             <div className="space-y-2">
