@@ -2,12 +2,15 @@ import { Pool } from 'pg';
 import dotenv from 'dotenv';
 dotenv.config({ override: true });
 
-const POOLER_DB_URL = "postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
-const rawDbUrl = process.env.DATABASE_URL;
-const isPlaceholder = !rawDbUrl || rawDbUrl.includes("YOUR_POSTGRES_URL") || rawDbUrl.includes("[YOUR-PASSWORD]") || rawDbUrl.includes("YOUR-PASSWORD");
-const dbUrl = isPlaceholder ? POOLER_DB_URL : rawDbUrl;
+const dbUrl = process.env.DATABASE_URL ? decodeURIComponent(process.env.DATABASE_URL) : "";
 
-const pool = new Pool({ connectionString: dbUrl });
+const pool = new Pool({ 
+  connectionString: dbUrl,
+  ssl: { rejectUnauthorized: false }
+});
+pool.on('error', (err) => {
+  console.warn("[Init DB] Postgres pool background error:", err.message);
+});
 async function main() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS workflow_logs (

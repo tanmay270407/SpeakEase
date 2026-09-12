@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import multer from "multer";
 import { spawnSync } from "child_process";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -15,14 +14,17 @@ import { corsairClient } from "./corsair";
 dotenv.config({ override: true });
 
 const { Pool } = pg;
-const POOLER_DB_URL = "postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
-const rawDbUrl = process.env.DATABASE_URL;
-const isPlaceholder = !rawDbUrl || rawDbUrl.includes("YOUR_POSTGRES_URL") || rawDbUrl.includes("[YOUR-PASSWORD]") || rawDbUrl.includes("YOUR-PASSWORD");
-const dbUrl = isPlaceholder ? POOLER_DB_URL : rawDbUrl;
+const dbUrl = process.env.DATABASE_URL ? decodeURIComponent(process.env.DATABASE_URL) : "";
 
 let pool: pg.Pool | null = null;
 try {
-  pool = new Pool({ connectionString: dbUrl });
+  pool = new Pool({ 
+    connectionString: dbUrl,
+    ssl: { rejectUnauthorized: false }
+  });
+  pool.on('error', (err) => {
+    console.warn("[Corsair DB] Postgres pool background error:", err.message);
+  });
   pool.query(`
     CREATE TABLE IF NOT EXISTS session_audio (
       session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -64,6 +66,16 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// Path normalization middleware for Vercel serverless rewrites
+app.use((req, res, next) => {
+  if (req.url && !req.url.startsWith("/api/")) {
+    if (req.url.startsWith("/corsair/")) {
+      req.url = "/api" + req.url;
+    }
+  }
+  next();
+});
 
 
 
@@ -184,7 +196,7 @@ app.post("/api/upload-avatar", upload.single("avatar"), async (req, res) => {
 });
 
 // Specific Corsair application endpoints for SLP Dashboard and Clinician Review Sync
-app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
+app.get(["/api/corsair/slp/:slpId/dashboard", "/corsair/slp/:slpId/dashboard"], async (req, res) => {
   try {
     const { slpId } = req.params;
     
@@ -555,7 +567,7 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
 });
 
 // Clinician Review Corsair Sync endpoint
-app.post("/api/corsair/sync/clinician_review", async (req, res) => {
+app.post(["/api/corsair/sync/clinician_review", "/corsair/sync/clinician_review"], async (req, res) => {
   try {
     const supabase = getSupabaseClient(req);
     if (!supabase) return res.status(401).json({ error: "Unauthorized" });
@@ -642,7 +654,7 @@ app.post("/api/corsair/sync/clinician_review", async (req, res) => {
 });
 
 // Built-in Corsair Management handler (handles /api/corsair/ok, /api/corsair/tenants, etc.)
-app.use("/api/corsair", toExpressHandler(corsairClient));
+app.use(["/api/corsair", "/corsair"], toExpressHandler(corsairClient));
 
 
 app.get("/api/audio/:sessionId", async (req, res) => {
@@ -798,6 +810,8 @@ app.get("/api/practice/content", async (req, res) => {
 
 // Robust Speech Analysis Pipeline with Resilient Model Cascade & Audio Storage
 const SPEECH_AI_MODELS = [
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
   'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-1.5-flash'
@@ -862,21 +876,27 @@ async function executeSpeechProcessingWithFallback(mimeType: string, base64Audio
   for (const model of SPEECH_AI_MODELS) {
     try {
       console.log(`[speech-analysis] Attempting acoustic extraction with model: ${model}`);
-      const sttResponse = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: sttPrompt },
-              { inlineData: { mimeType, data: base64Audio } }
-            ]
-          }
-        ],
-        config: {
-          responseMimeType: "application/json"
-        }
+      const timeoutPromise = new Promise<any>((_, reject) => {
+        setTimeout(() => reject(new Error(`Timeout: Gemini call to ${model} took too long`)), 8000);
       });
+      const sttResponse = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: sttPrompt },
+                { inlineData: { mimeType, data: base64Audio } }
+              ]
+            }
+          ],
+          config: {
+            responseMimeType: "application/json"
+          }
+        }),
+        timeoutPromise
+      ]);
 
       const sttResultText = sttResponse.text;
       if (sttResultText && sttResultText.trim().length > 0) {
@@ -1119,11 +1139,17 @@ Return a JSON object with this EXACT structure:
   for (const model of SPEECH_AI_MODELS) {
     try {
       if (!ai) break;
-      const obsRes = await ai.models.generateContent({
-        model,
-        contents: corsairAnalysisPrompt,
-        config: { responseMimeType: "application/json" }
+      const timeoutPromise = new Promise<any>((_, reject) => {
+        setTimeout(() => reject(new Error(`Timeout: Gemini clinical observation call to ${model} took too long`)), 8000);
       });
+      const obsRes = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: corsairAnalysisPrompt,
+          config: { responseMimeType: "application/json" }
+        }),
+        timeoutPromise
+      ]);
       if (obsRes.text) {
         const jsonMatch = obsRes.text.match(/\{[\s\S]*\}/);
         const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : obsRes.text);
@@ -2458,9 +2484,21 @@ Rules:
   }
 });
 
+// Global JSON error handler middleware to prevent HTML errors
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[Express Global Error Handler]:", err?.message || err);
+  if (!res.headersSent) {
+    res.status(err.status || err.statusCode || 500).json({
+      success: false,
+      error: err.message || "An internal server error occurred"
+    });
+  }
+});
+
 // Vite middleware for development
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

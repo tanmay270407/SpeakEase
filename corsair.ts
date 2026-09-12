@@ -5,14 +5,16 @@ import { createCorsair } from 'corsair';
 import { Pool } from 'pg';
 import { z } from 'zod';
 
-const POOLER_DB_URL = "postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
-const rawDbUrl = process.env.DATABASE_URL;
-const isPlaceholder = !rawDbUrl || rawDbUrl.includes("YOUR_POSTGRES_URL") || rawDbUrl.includes("[YOUR-PASSWORD]") || rawDbUrl.includes("YOUR-PASSWORD");
-const dbUrl = isPlaceholder ? POOLER_DB_URL : rawDbUrl;
+const dbUrl = process.env.DATABASE_URL ? decodeURIComponent(process.env.DATABASE_URL) : "";
 
-// Initialize Postgres connection
+// Initialize Postgres connection with SSL support for cloud serverless environments
 const pool = new Pool({ 
-  connectionString: dbUrl 
+  connectionString: dbUrl,
+  ssl: { rejectUnauthorized: false }
+});
+
+pool.on('error', (err) => {
+  console.warn("[Corsair Client] Postgres pool background error:", err.message);
 });
 
 const DEFAULT_KEK = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -132,6 +134,7 @@ export const corsairClient = createCorsair({
       projectApiKey: corsairApiKey,
       signingSecret: corsairSigningSecret,
       allowWorkflowExecution: true,
+      tunnel: process.env.CORSAIR_TUNNEL === "1",
     }
   } : {}),
 });

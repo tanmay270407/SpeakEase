@@ -1,5 +1,5 @@
 import pg from 'pg';
-const DATABASE_URL = 'postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres';
+const DATABASE_URL = process.env.DATABASE_URL || '';
 
 const sql = `
 CREATE TABLE IF NOT EXISTS corsair_integrations (

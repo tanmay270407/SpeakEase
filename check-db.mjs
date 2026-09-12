@@ -1,9 +1,9 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
-dotenv.config();
+dotenv.config({ override: true });
 
 async function check() {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL ? decodeURIComponent(process.env.DATABASE_URL) : "", ssl: { rejectUnauthorized: false } });
   const res = await pool.query(`
     SELECT table_name 
     FROM information_schema.tables 
