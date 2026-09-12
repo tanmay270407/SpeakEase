@@ -306,7 +306,9 @@ export function ExerciseResultPage() {
           <p className="text-slate-500 text-sm">
             {hasAnalysisCompleted 
               ? "Your exercise recording has been analyzed and saved to your clinical history."
-              : "Your voice recording was safely saved, but automated speech analysis could not be completed."}
+              : audioError
+                ? "Audio could not be saved."
+                : "Your voice recording was safely saved, but automated speech analysis could not be completed."}
           </p>
         </div>
       </div>

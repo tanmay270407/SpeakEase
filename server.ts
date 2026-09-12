@@ -8,59 +8,9 @@ import dotenv from "dotenv";
 import { z } from "zod";
 import { toExpressHandler } from "corsair";
 import { buildCorsairToolDefs } from "@corsair-dev/mcp";
-import pg from "pg";
-import { corsairClient } from "./corsair";
+import { corsairClient, pool } from "./corsair";
 
 dotenv.config({ override: true });
-
-const { Pool } = pg;
-const dbUrl = process.env.DATABASE_URL ? decodeURIComponent(process.env.DATABASE_URL) : "";
-
-let pool: pg.Pool | null = null;
-try {
-  pool = new Pool({ 
-    connectionString: dbUrl,
-    ssl: { rejectUnauthorized: false }
-  });
-  pool.on('error', (err) => {
-    console.warn("[Corsair DB] Postgres pool background error:", err.message);
-  });
-  pool.query(`
-    CREATE TABLE IF NOT EXISTS session_audio (
-      session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-      audio_data BYTEA NOT NULL,
-      content_type TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'speech_metrics_session_id_key'
-      ) THEN
-        BEGIN
-          ALTER TABLE speech_metrics ADD CONSTRAINT speech_metrics_session_id_key UNIQUE (session_id);
-        EXCEPTION WHEN others THEN
-          NULL;
-        END;
-      END IF;
-
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'ai_observations_session_id_key'
-      ) THEN
-        BEGIN
-          ALTER TABLE ai_observations ADD CONSTRAINT ai_observations_session_id_key UNIQUE (session_id);
-        EXCEPTION WHEN others THEN
-          NULL;
-        END;
-      END IF;
-    END $$;
-  `).catch(err => {
-    console.warn("Could not verify session_audio or unique constraints:", err.message);
-  });
-} catch (e: any) {
-  console.warn("Postgres pool init error:", e.message);
-}
 
 const app = express();
 const PORT = 3000;
@@ -966,15 +916,17 @@ async function runSpeechAnalysisPipeline({
       console.log(`[AUDIO_SAVED] Audio verified in database for session ${sessionId} (${verifyRes.rows[0].len} bytes)`);
 
       // Sync to Supabase storage bucket
-      try {
-        await supabase.storage.from("session_audio").upload(
-          `${user.id}/${sessionId}.webm`,
-          audioBuffer,
-          { contentType: mimeType || "audio/webm", upsert: true }
-        );
-      } catch (storageErr: any) {
-        console.warn("Supabase storage sync notice:", storageErr.message);
+      console.log(`[AUDIO_UPLOAD_START] Syncing audio to Supabase Storage path: ${user.id}/${sessionId}.webm`);
+      const { data: storageData, error: storageErr } = await supabase.storage.from("session_audio").upload(
+        `${user.id}/${sessionId}.webm`,
+        audioBuffer,
+        { contentType: mimeType || "audio/webm", upsert: true }
+      );
+      if (storageErr) {
+        console.error(`[SUPABASE_STORAGE_UPLOAD_FAILED] Error syncing to Supabase Storage:`, storageErr.message || storageErr);
+        throw new Error(`AUDIO_STORAGE_FAILED: Supabase storage upload failed: ${storageErr.message || JSON.stringify(storageErr)}`);
       }
+      console.log(`[AUDIO_UPLOAD_SUCCESS] Audio safely synced to Supabase Storage with path: ${storageData?.path || `${user.id}/${sessionId}.webm`}`);
     } catch (audioErr: any) {
       console.error("[AUDIO_STORAGE_FAILED]:", audioErr.message);
       throw audioErr;
@@ -2519,7 +2471,10 @@ async function startServer() {
 
 
 export default app;
-if (process.env.NODE_ENV !== "production" || process.env.RUN_SERVER === "true" || (!process.env.VERCEL && !process.env.AWS_REGION)) {
+const isServerless = !!process.env.VERCEL || !!process.env.AWS_REGION;
+if (!isServerless && process.env.NODE_ENV !== "production") {
+  startServer();
+} else if (!isServerless && process.env.RUN_SERVER === "true") {
   startServer();
 }
 

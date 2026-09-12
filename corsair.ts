@@ -5,10 +5,17 @@ import { createCorsair } from 'corsair';
 import { Pool } from 'pg';
 import { z } from 'zod';
 
-const dbUrl = process.env.DATABASE_URL ? decodeURIComponent(process.env.DATABASE_URL) : "";
+let dbUrl = "";
+if (process.env.DATABASE_URL) {
+  try {
+    dbUrl = decodeURIComponent(process.env.DATABASE_URL);
+  } catch (e) {
+    dbUrl = process.env.DATABASE_URL;
+  }
+}
 
 // Initialize Postgres connection with SSL support for cloud serverless environments
-const pool = new Pool({ 
+export const pool = new Pool({ 
   connectionString: dbUrl,
   ssl: { rejectUnauthorized: false }
 });
@@ -134,7 +141,7 @@ export const corsairClient = createCorsair({
       projectApiKey: corsairApiKey,
       signingSecret: corsairSigningSecret,
       allowWorkflowExecution: true,
-      tunnel: process.env.CORSAIR_TUNNEL === "1",
+      tunnel: process.env.VERCEL ? false : process.env.CORSAIR_TUNNEL === "1",
     }
   } : {}),
 });
