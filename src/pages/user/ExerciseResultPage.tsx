@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, RotateCcw, ArrowLeft, Loader2, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
@@ -117,12 +117,26 @@ export function ExerciseResultPage() {
     }
   }, [sessionId]);
 
+  const pollCountRef = useRef(0);
+
   // Auto-polling if exercise session is actively analyzing or saving in background
   useEffect(() => {
     const isAnalyzing = session?.analysis_status === 'analyzing' || session?.analysis_status === 'processing' || session?.analysis_status === 'saving';
-    if (!isAnalyzing) return;
+    if (!isAnalyzing) {
+      pollCountRef.current = 0;
+      return;
+    }
 
     const interval = setInterval(() => {
+      pollCountRef.current += 1;
+      if (pollCountRef.current > 12) {
+        clearInterval(interval);
+        setSession((prev: any) => prev ? { ...prev, analysis_status: 'failed' } : prev);
+        if (sessionId) {
+          (supabase.from('sessions') as any).update({ analysis_status: 'failed' }).eq('id', sessionId).then(() => {});
+        }
+        return;
+      }
       loadResults(true);
     }, 2000);
 
@@ -460,6 +474,47 @@ export function ExerciseResultPage() {
             loadResults(true);
           }}
         />
+      )}
+
+      {/* Failed Analysis Retry Section */}
+      {isAnalysisFailed && (
+        <Card className="border-amber-200 bg-amber-50/60 shadow-sm">
+          <CardContent className="p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" aria-hidden="true" />
+                <div>
+                  <h3 className="text-sm font-semibold text-amber-900">
+                    Speech analysis unavailable
+                  </h3>
+                  <p className="mt-1 text-xs text-amber-700">
+                    Speech analysis could not be completed. Your session audio was securely saved and you can retry analysis now.
+                  </p>
+                  {retryError && (
+                    <p className="mt-2 text-xs text-red-600 font-medium">{retryError}</p>
+                  )}
+                </div>
+              </div>
+              <Button
+                onClick={handleRetryAnalysis}
+                disabled={retrying}
+                className="bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium shrink-0 gap-2 shadow-xs"
+              >
+                {retrying ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Analyzing...
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-4 h-4" />
+                    Retry Analysis
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Action Navigation: Remains strictly within Exercises or returns to Dashboard */}

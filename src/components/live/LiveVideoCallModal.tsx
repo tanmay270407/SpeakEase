@@ -16,13 +16,12 @@ import {
   Sparkles,
   User,
   Clock,
-  Maximize2,
-  Minimize2,
   AlertCircle,
   Activity,
   Star,
   CheckCircle,
   Loader2,
+  Radio
 } from "lucide-react";
 
 interface LiveVideoCallModalProps {
@@ -44,6 +43,12 @@ export function LiveVideoCallModal({
   const [screenSharing, setScreenSharing] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
 
+  // Connection & WebRTC presence state
+  const [peerConnected, setPeerConnected] = useState(false);
+  const [remotePresent, setRemotePresent] = useState(false);
+  const [remoteUserInfo, setRemoteUserInfo] = useState<{ name: string; role: string } | null>(null);
+  const [connectionStatusText, setConnectionStatusText] = useState("Waiting for participant...");
+
   // Call duration state
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [callActive, setCallActive] = useState(false);
@@ -62,19 +67,28 @@ export function LiveVideoCallModal({
 
   // Video refs
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+
   const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const channelRef = useRef<any>(null);
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const isOfferingRef = useRef<boolean>(false);
 
-  // Start media stream on modal open
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !profile?.id) return;
 
     let isMounted = true;
 
-    async function startMedia() {
+    async function setupWebRTCCall() {
       try {
         setMediaError(null);
+        setConnectionStatusText("Requesting camera and microphone access...");
+
+        // 1. Get user media
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true
@@ -102,7 +116,7 @@ export function LiveVideoCallModal({
             .eq("id", session.id);
         }
 
-        // Setup Audio Analyser for voice meter
+        // Setup audio meter
         try {
           const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
           if (AudioContextClass) {
@@ -131,25 +145,196 @@ export function LiveVideoCallModal({
         } catch (e) {
           console.warn("Audio analyser initialization notice:", e);
         }
+
+        // 2. Initialize RTCPeerConnection
+        setConnectionStatusText("Initializing WebRTC peer connection...");
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" }
+          ]
+        });
+        pcRef.current = pc;
+
+        // Add local tracks to peer connection
+        stream.getTracks().forEach((track) => {
+          pc.addTrack(track, stream);
+        });
+
+        // Handle remote stream tracks
+        pc.ontrack = (event) => {
+          if (event.streams && event.streams[0]) {
+            remoteStreamRef.current = event.streams[0];
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = event.streams[0];
+            }
+            setPeerConnected(true);
+            setConnectionStatusText("Live Video Connected");
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          console.log("WebRTC connectionState changed:", pc.connectionState);
+          if (pc.connectionState === "connected") {
+            setPeerConnected(true);
+            setConnectionStatusText("Live Video Connected");
+          } else if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+            setPeerConnected(false);
+            setConnectionStatusText("Peer disconnected. Reconnecting...");
+          }
+        };
+
+        // 3. Supabase Realtime Channel Signaling & Presence
+        const channelName = `session_room_${session.id}`;
+        const channel = supabase.channel(channelName, {
+          config: {
+            presence: {
+              key: profile.id
+            }
+          }
+        });
+        channelRef.current = channel;
+
+        // Handle ICE candidates
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            channel.send({
+              type: "broadcast",
+              event: "webrtc-signal",
+              payload: {
+                sender_id: profile.id,
+                type: "candidate",
+                candidate: event.candidate.toJSON()
+              }
+            });
+          }
+        };
+
+        // Listen for signaling events
+        channel.on("broadcast", { event: "webrtc-signal" }, async ({ payload }) => {
+          if (!payload || payload.sender_id === profile.id || !pcRef.current) return;
+
+          try {
+            if (payload.type === "offer") {
+              setConnectionStatusText("Received offer. Connecting...");
+              await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+              const answer = await pcRef.current.createAnswer();
+              await pcRef.current.setLocalDescription(answer);
+
+              channel.send({
+                type: "broadcast",
+                event: "webrtc-signal",
+                payload: {
+                  sender_id: profile.id,
+                  type: "answer",
+                  sdp: answer
+                }
+              });
+            } else if (payload.type === "answer") {
+              setConnectionStatusText("Received answer. Finalizing connection...");
+              await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+            } else if (payload.type === "candidate") {
+              if (pcRef.current.remoteDescription) {
+                await pcRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
+              }
+            }
+          } catch (err) {
+            console.error("Error handling WebRTC signal:", err);
+          }
+        });
+
+        // Listen for presence changes
+        channel.on("presence", { event: "sync" }, async () => {
+          const presenceState = channel.presenceState();
+          let isOtherPresent = false;
+          let otherUser: { name: string; role: string } | null = null;
+
+          Object.values(presenceState).forEach((presences: any) => {
+            presences.forEach((p: any) => {
+              if (p.user_id !== profile.id) {
+                isOtherPresent = true;
+                otherUser = { name: p.user_name || "Participant", role: p.role || "" };
+              }
+            });
+          });
+
+          setRemotePresent(isOtherPresent);
+          setRemoteUserInfo(otherUser);
+
+          if (isOtherPresent) {
+            if (!peerConnected) {
+              setConnectionStatusText("Participant in room. Establishing WebRTC call...");
+            }
+            // SLP acts as deterministic offerer when both participants are present
+            if (userRole === "slp" && !isOfferingRef.current && pcRef.current?.signalingState === "stable") {
+              isOfferingRef.current = true;
+              try {
+                const offer = await pcRef.current.createOffer();
+                await pcRef.current.setLocalDescription(offer);
+
+                channel.send({
+                  type: "broadcast",
+                  event: "webrtc-signal",
+                  payload: {
+                    sender_id: profile.id,
+                    type: "offer",
+                    sdp: offer
+                  }
+                });
+              } catch (e) {
+                console.error("Failed to create offer:", e);
+                isOfferingRef.current = false;
+              }
+            }
+          } else {
+            setConnectionStatusText(
+              userRole === "slp"
+                ? "Waiting for Patient to join..."
+                : "Waiting for Speech Clinician to join..."
+            );
+          }
+        });
+
+        // Subscribe to channel & track presence
+        channel.subscribe(async (status) => {
+          if (status === "SUBSCRIBED") {
+            await channel.track({
+              user_id: profile.id,
+              user_name: profile.full_name || (userRole === "slp" ? "SLP" : "Patient"),
+              role: userRole,
+              joined_at: new Date().toISOString()
+            });
+          }
+        });
+
       } catch (err: any) {
-        console.error("Camera/mic error:", err);
+        console.error("Camera/mic/WebRTC error:", err);
         setMediaError(
           "Could not access camera or microphone. Please check browser permissions."
         );
       }
     }
 
-    startMedia();
+    setupWebRTCCall();
 
     return () => {
       isMounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (audioContextRef.current) audioContextRef.current.close();
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
     };
-  }, [isOpen, session.id]);
+  }, [isOpen, session.id, profile?.id]);
 
   // Timer counter
   useEffect(() => {
@@ -185,7 +370,6 @@ export function LiveVideoCallModal({
   // Toggle Screen Share
   const toggleScreenShare = async () => {
     if (screenSharing) {
-      // Switch back to video camera
       try {
         const camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         localStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -193,6 +377,14 @@ export function LiveVideoCallModal({
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = camStream;
         }
+
+        // Replace track in RTCPeerConnection
+        const videoTrack = camStream.getVideoTracks()[0];
+        const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === "video");
+        if (sender && videoTrack) {
+          sender.replaceTrack(videoTrack);
+        }
+
         setScreenSharing(false);
       } catch (e) {
         console.error(e);
@@ -201,7 +393,7 @@ export function LiveVideoCallModal({
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         localStreamRef.current?.getVideoTracks().forEach((t) => t.stop());
-        
+
         const audioTrack = localStreamRef.current?.getAudioTracks()[0];
         if (audioTrack) {
           screenStream.addTrack(audioTrack);
@@ -211,9 +403,16 @@ export function LiveVideoCallModal({
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = screenStream;
         }
+
+        const screenVideoTrack = screenStream.getVideoTracks()[0];
+        const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === "video");
+        if (sender && screenVideoTrack) {
+          sender.replaceTrack(screenVideoTrack);
+        }
+
         setScreenSharing(true);
 
-        screenStream.getVideoTracks()[0].onended = () => {
+        screenVideoTrack.onended = () => {
           setScreenSharing(false);
         };
       } catch (e) {
@@ -228,7 +427,14 @@ export function LiveVideoCallModal({
       setCallActive(false);
       setCallEnded(true);
 
-      // Stop stream tracks
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+      if (pcRef.current) {
+        pcRef.current.close();
+        pcRef.current = null;
+      }
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
@@ -302,8 +508,8 @@ export function LiveVideoCallModal({
 
   const otherPersonName =
     userRole === "slp"
-      ? session.patient?.full_name || "Patient"
-      : session.slp?.full_name || "Speech Language Pathologist";
+      ? session.patient?.full_name || (session as any).profiles?.full_name || "Patient"
+      : session.slp?.full_name || (session as any).slps?.full_name || "Speech Language Pathologist";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-200">
@@ -313,8 +519,8 @@ export function LiveVideoCallModal({
         <div className="flex items-center justify-between px-6 py-4 bg-slate-900/80 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
             <div className="relative flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+              <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${peerConnected ? "bg-emerald-400" : "bg-amber-400"} opacity-75`}></span>
+              <span className={`relative inline-flex rounded-full h-3 w-3 ${peerConnected ? "bg-emerald-500" : "bg-amber-500"}`}></span>
             </div>
             <div>
               <h3 className="text-base font-bold text-white flex items-center gap-2">
@@ -323,8 +529,12 @@ export function LiveVideoCallModal({
                   {userRole === "slp" ? "Clinician Room" : "Patient Room"}
                 </Badge>
               </h3>
-              <p className="text-xs text-slate-400">
-                Connected with <span className="text-slate-200 font-semibold">{otherPersonName}</span>
+              <p className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
+                <span>With <strong className="text-slate-200 font-semibold">{otherPersonName}</strong></span>
+                <span className="text-slate-600">•</span>
+                <span className={`text-[11px] font-medium ${peerConnected ? "text-emerald-400" : "text-amber-400"}`}>
+                  {connectionStatusText}
+                </span>
               </p>
             </div>
           </div>
@@ -480,28 +690,61 @@ export function LiveVideoCallModal({
             )
           ) : (
             <div className="relative w-full h-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 flex items-center justify-center">
-              {/* Simulated Remote Video Screen */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-900/90 to-indigo-950/40 p-6 text-center">
-                <div className="relative mb-4">
-                  <div className="h-28 w-28 rounded-full bg-gradient-to-tr from-indigo-600 to-teal-500 p-1 shadow-xl">
-                    <div className="h-full w-full rounded-full bg-slate-900 flex items-center justify-center text-3xl font-bold text-white">
-                      {otherPersonName.charAt(0)}
+              
+              {/* Remote Video element */}
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className={`w-full h-full object-cover ${peerConnected ? "block" : "hidden"}`}
+              />
+
+              {/* Waiting for participant / Remote placeholder */}
+              {!peerConnected && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-900/95 to-indigo-950/60 p-6 text-center space-y-4">
+                  <div className="relative">
+                    <div className="h-28 w-28 rounded-full bg-gradient-to-tr from-indigo-600 to-teal-500 p-1 shadow-xl">
+                      <div className="h-full w-full rounded-full bg-slate-900 flex items-center justify-center text-3xl font-bold text-white">
+                        {otherPersonName.charAt(0)}
+                      </div>
+                    </div>
+                    {remotePresent ? (
+                      <span className="absolute bottom-1 right-1 h-5 w-5 rounded-full bg-emerald-500 border-2 border-slate-900 animate-pulse" />
+                    ) : (
+                      <span className="absolute bottom-1 right-1 h-5 w-5 rounded-full bg-amber-500 border-2 border-slate-900" />
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <h4 className="text-lg font-bold text-white">{otherPersonName}</h4>
+                    <div className="flex items-center justify-center gap-2 text-xs text-indigo-300 font-medium">
+                      {remotePresent ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                          <span>Connecting WebRTC media stream...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Radio className="h-3.5 w-3.5 animate-pulse text-amber-400" />
+                          <span>Waiting for participant to join meeting room...</span>
+                        </>
+                      )}
                     </div>
                   </div>
-                  <span className="absolute bottom-1 right-1 h-5 w-5 rounded-full bg-emerald-500 border-2 border-slate-900" />
+
+                  <p className="text-xs text-slate-400 max-w-sm">
+                    {userRole === "slp"
+                      ? "Your camera and microphone are live. The session will connect automatically when the patient joins."
+                      : "Your camera and microphone are live. The session will connect automatically when your speech clinician joins."}
+                  </p>
+
+                  {session.purpose && (
+                    <div className="px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300">
+                      <span className="font-semibold text-indigo-300">Session Goal:</span> {session.purpose}
+                    </div>
+                  )}
                 </div>
-                <h4 className="text-lg font-bold text-white">{otherPersonName}</h4>
-                <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                  {userRole === "slp"
-                    ? "Patient speech stream active. Voice metrics and fluencies are monitored."
-                    : "Live audio and video feed active with your speech language pathologist."}
-                </p>
-                {session.purpose && (
-                  <div className="mt-4 px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300">
-                    <span className="font-semibold text-indigo-300">Session Goal:</span> {session.purpose}
-                  </div>
-                )}
-              </div>
+              )}
 
               {/* Local Self Camera Feed Overlay */}
               <div className="absolute bottom-4 right-4 w-44 sm:w-60 aspect-video rounded-2xl overflow-hidden border-2 border-indigo-500/50 shadow-2xl bg-slate-950 z-10">
@@ -518,8 +761,8 @@ export function LiveVideoCallModal({
                     <span>Camera Off</span>
                   </div>
                 )}
-                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-slate-950/80 text-[10px] font-semibold text-slate-200 backdrop-blur-xs">
-                  You ({userRole === "slp" ? "SLP" : "Patient"})
+                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-slate-950/80 text-[10px] font-semibold text-slate-200 backdrop-blur-xs flex items-center gap-1">
+                  <span>You ({userRole === "slp" ? "SLP" : "Patient"})</span>
                 </div>
               </div>
             </div>

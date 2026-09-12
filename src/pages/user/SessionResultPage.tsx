@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useParams, Link } from "react-router-dom";
 import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, Loader2, RotateCcw, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
@@ -81,12 +81,26 @@ export function SessionResultPage() {
     loadResults();
   }, [sessionId]);
 
+  const pollCountRef = useRef(0);
+
   // Auto-polling if session is actively analyzing or saving in background
   useEffect(() => {
     const isAnalyzing = session?.analysis_status === 'analyzing' || session?.analysis_status === 'processing' || session?.analysis_status === 'saving';
-    if (!isAnalyzing) return;
+    if (!isAnalyzing) {
+      pollCountRef.current = 0;
+      return;
+    }
 
     const interval = setInterval(() => {
+      pollCountRef.current += 1;
+      if (pollCountRef.current > 12) {
+        clearInterval(interval);
+        setSession((prev: any) => prev ? { ...prev, analysis_status: 'failed' } : prev);
+        if (sessionId) {
+          (supabase.from('sessions') as any).update({ analysis_status: 'failed' }).eq('id', sessionId).then(() => {});
+        }
+        return;
+      }
       loadResults(true);
     }, 2500);
 

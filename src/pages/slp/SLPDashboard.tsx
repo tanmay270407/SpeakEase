@@ -6,6 +6,7 @@ import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { Users, FileText, Activity, Clock, ChevronRight, AlertTriangle, Search, UserPlus, Inbox } from "lucide-react";
 import { formatDuration } from "../../lib/utils";
+import { parseJsonResponseSafely } from "../../lib/apiUtils";
 import { getExerciseDetailsById } from "../../data/exerciseDetailsData";
 import { Avatar } from "../../components/Avatar";
 import { CardSkeleton } from "../../components/ui/Skeleton";
@@ -47,15 +48,17 @@ export function SLPDashboard() {
             const corsairRes = await fetch(`/api/corsair/slp/${slpData.id}/dashboard`, {
               headers: { 'Authorization': `Bearer ${session.access_token}` }
             });
-            if (!corsairRes.ok) {
-              const errData = await corsairRes.json();
-              throw new Error(errData.error || errData.details || "Corsair API unavailable");
+            
+            const parsed = await parseJsonResponseSafely(corsairRes);
+            if (!parsed.ok) {
+              throw new Error(parsed.errorMessage || "Corsair API unavailable");
             }
-            const dashboardData = await corsairRes.json();
-            setPatientCount(dashboardData.patientCount);
-            setSessionCount(dashboardData.sessionCount);
+
+            const dashboardData = parsed.data || {};
+            setPatientCount(dashboardData.patientCount || 0);
+            setSessionCount(dashboardData.sessionCount || 0);
             setTotalPracticeSeconds(dashboardData.totalPracticeSeconds || 0);
-            setNeedsReviewSessions(dashboardData.needsReviewSessions);
+            setNeedsReviewSessions(dashboardData.needsReviewSessions || []);
             setInactivePatients(dashboardData.inactivePatients || []);
             setRecentSessions(dashboardData.recentSessions || []);
             setSpeechMetrics(dashboardData.speechMetrics || []);
@@ -65,7 +68,7 @@ export function SLPDashboard() {
           }
         } catch (cErr: any) {
           console.warn("Corsair integration error, falling back to local DB:", cErr);
-          setCorsairError(cErr.message);
+          setCorsairError(cErr.message || "Corsair API error");
         }
 
         // Fallback: Get Active Patients from Supabase

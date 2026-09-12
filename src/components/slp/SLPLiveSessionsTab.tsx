@@ -139,6 +139,45 @@ export function SLPLiveSessionsTab() {
     }
   };
 
+  const handleRespondRequest = async (session: ExtendedLiveSession, newStatus: "confirmed" | "rejected") => {
+    try {
+      const { error: updateErr } = await (supabase.from("live_sessions") as any)
+        .update({
+          status: newStatus,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", session.id);
+
+      if (updateErr) throw updateErr;
+
+      // Notify patient
+      const dateStr = new Date(session.scheduled_start).toLocaleDateString("en-US", {
+        weekday: "short",
+        month: "short",
+        day: "numeric"
+      });
+
+      const notifTitle = newStatus === "confirmed" ? "Live Session Request Accepted" : "Live Session Request Declined";
+      const notifMsg = newStatus === "confirmed"
+        ? `Your clinician accepted your live session request for ${dateStr}.`
+        : `Your clinician declined your live session request for ${dateStr}.`;
+
+      await (supabase.from("notifications") as any).insert({
+        user_id: session.patient_id,
+        session_id: session.id,
+        type: newStatus === "confirmed" ? "live_session_accepted" : "live_session_rejected",
+        title: notifTitle,
+        message: notifMsg,
+        is_read: false
+      });
+
+      await fetchLiveSessions();
+    } catch (err: any) {
+      console.error("Failed to respond to session request:", err);
+      alert(err.message || "Failed to update session request.");
+    }
+  };
+
   const now = new Date();
 
   const upcomingSessions = sessions.filter(
@@ -306,13 +345,19 @@ export function SLPLiveSessionsTab() {
                             </Badge>
                           )}
                           {session.status === "pending" && (
-                            <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 font-semibold text-xs border border-amber-200">
-                              Awaiting Patient Approval
-                            </Badge>
+                            session.requested_by === "patient" ? (
+                              <Badge className="bg-indigo-100 text-indigo-800 hover:bg-indigo-100 font-semibold text-xs border border-indigo-200">
+                                Patient Requested Session
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 font-semibold text-xs border border-amber-200">
+                                Awaiting Patient Approval
+                              </Badge>
+                            )
                           )}
                           {session.status === "rejected" && (
                             <Badge className="bg-red-100 text-red-800 hover:bg-red-100 font-semibold text-xs border border-red-200">
-                              Declined by Patient
+                              Declined
                             </Badge>
                           )}
                           {session.status === "cancelled" && (
@@ -350,26 +395,47 @@ export function SLPLiveSessionsTab() {
 
                     {/* Action controls */}
                     <div className="flex items-center gap-2 shrink-0 pt-2 md:pt-0">
-                      {(session.status === "confirmed" || session.status === "pending") && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setCancelTargetSession(session)}
-                          className="text-xs text-slate-500 hover:text-red-600 hover:bg-red-50 h-8 px-2.5 cursor-pointer"
-                        >
-                          <Ban className="h-3.5 w-3.5 mr-1" />
-                          Cancel
-                        </Button>
+                      {session.status === "pending" && session.requested_by === "patient" && (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRespondRequest(session, "rejected")}
+                            className="text-xs border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800 h-8 px-3 cursor-pointer"
+                          >
+                            <XCircle className="h-3.5 w-3.5 mr-1 text-red-500" />
+                            Decline
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => handleRespondRequest(session, "confirmed")}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 px-3.5 font-semibold cursor-pointer shadow-2xs"
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                            Accept Request
+                          </Button>
+                        </>
                       )}
 
                       {session.status === "confirmed" && (
-                        <Button
-                          onClick={() => setActiveCallSession(session)}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 px-3.5 font-semibold cursor-pointer shadow-2xs"
-                        >
-                          <Video className="h-3.5 w-3.5 mr-1.5" />
-                          Start Live Call
-                        </Button>
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setCancelTargetSession(session)}
+                            className="text-xs text-slate-500 hover:text-red-600 hover:bg-red-50 h-8 px-2.5 cursor-pointer"
+                          >
+                            <Ban className="h-3.5 w-3.5 mr-1" />
+                            Cancel
+                          </Button>
+                          <Button
+                            onClick={() => setActiveCallSession(session)}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 px-3.5 font-semibold cursor-pointer shadow-2xs"
+                          >
+                            <Video className="h-3.5 w-3.5 mr-1.5" />
+                            Start Live Call
+                          </Button>
+                        </>
                       )}
                     </div>
                   </div>

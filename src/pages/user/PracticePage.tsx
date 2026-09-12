@@ -227,6 +227,8 @@ export function PracticePage() {
   };
 
   const processAudio = async (currentSessionId: string, audioData?: Blob | null) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) throw new Error("Not authenticated");
@@ -242,7 +244,8 @@ export function PracticePage() {
           headers: {
             'Authorization': `Bearer ${session.access_token}`
           },
-          body: formData
+          body: formData,
+          signal: controller.signal
         });
       } else {
         response = await fetch(`/api/sessions/${currentSessionId}/retry-analysis`, {
@@ -250,16 +253,26 @@ export function PracticePage() {
           headers: {
             'Authorization': `Bearer ${session.access_token}`,
             'Content-Type': 'application/json'
-          }
+          },
+          signal: controller.signal
         });
       }
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || 'Failed to process audio');
       }
     } catch (err: any) {
+      clearTimeout(timeoutId);
       console.error('Background audio processing notice:', err);
+      try {
+        await (supabase.from('sessions') as any)
+          .update({ analysis_status: 'failed' })
+          .eq('id', currentSessionId);
+      } catch (updateErr: any) {
+        console.warn('Failed to update session status to failed:', updateErr);
+      }
     }
   };
 

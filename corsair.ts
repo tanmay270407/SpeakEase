@@ -15,6 +15,22 @@ const pool = new Pool({
   connectionString: dbUrl 
 });
 
+const DEFAULT_KEK = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+const rawKek = process.env.CORSAIR_KEK;
+const kek = (rawKek && !rawKek.includes("YOUR_CORSAIR_KEK") && rawKek.length >= 16)
+  ? rawKek
+  : DEFAULT_KEK;
+
+const rawApiKey = process.env.CORSAIR_API_KEY;
+const corsairApiKey = (rawApiKey && !rawApiKey.includes("YOUR_CORSAIR_API_KEY"))
+  ? rawApiKey
+  : undefined;
+
+const rawSecret = process.env.CORSAIR_SIGNING_SECRET;
+const corsairSigningSecret = (rawSecret && !rawSecret.includes("YOUR_CORSAIR_SIGNING_SECRET"))
+  ? rawSecret
+  : undefined;
+
 export const corsairClient = createCorsair({
   plugins: [
     {
@@ -110,12 +126,14 @@ export const corsairClient = createCorsair({
     }
   ],
   database: pool,
-  kek: process.env.CORSAIR_KEK!,
-  hub: {
-    projectApiKey: process.env.CORSAIR_API_KEY!,
-    signingSecret: process.env.CORSAIR_SIGNING_SECRET!,
-    allowWorkflowExecution: true,
-  },
+  kek: kek,
+  ...(corsairApiKey && corsairSigningSecret ? {
+    hub: {
+      projectApiKey: corsairApiKey,
+      signingSecret: corsairSigningSecret,
+      allowWorkflowExecution: true,
+    }
+  } : {}),
 });
 
 (corsairClient as any).corsair = corsairClient;

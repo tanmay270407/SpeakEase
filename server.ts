@@ -188,32 +188,46 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
   try {
     const { slpId } = req.params;
     
+    if (!slpId || slpId === "undefined" || slpId === "null") {
+      return res.status(400).json({ success: false, error: "Invalid SLP ID provided" });
+    }
+
     const supabase = getSupabaseClient(req);
-    if (!supabase) return res.status(401).json({ error: "Missing authorization" });
+    if (!supabase) {
+      console.warn("[Corsair Dashboard] Request missing authorization header");
+      return res.status(401).json({ success: false, error: "Missing authorization header" });
+    }
 
     const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) return res.status(401).json({ error: "Invalid token" });
+    if (authError || !user) {
+      console.warn("[Corsair Dashboard] Authentication failed:", authError?.message || "User session invalid");
+      return res.status(401).json({ success: false, error: "Invalid or expired session token" });
+    }
 
-    // Verify SLP owns this data or is admin
-    const { data: slpRec } = await supabase
+    // Verify SLP record exists
+    const { data: slpRec, error: slpErr } = await supabase
       .from('slps')
       .select('id, user_id, full_name, email, phone, specialization')
       .eq('id', slpId)
       .single();
 
-    if (!slpRec) {
-      return res.status(404).json({ error: "SLP record not found" });
+    if (slpErr || !slpRec) {
+      console.warn(`[Corsair Dashboard] SLP record not found for id ${slpId}`);
+      return res.status(404).json({ success: false, error: "SLP record not found" });
     }
 
+    // Authorization check: Verify SLP owns this data or user is ADMIN
     if (slpRec.user_id !== user.id) {
       const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
       if (profile?.role !== 'ADMIN') {
-        return res.status(403).json({ error: "Unauthorized access to SLP data" });
+        console.warn(`[Corsair Dashboard] Forbidden access attempt by user ${user.id} on SLP ${slpId}`);
+        return res.status(403).json({ success: false, error: "Unauthorized access to SLP clinical data" });
       }
     }
 
     if (!pool) {
-      return res.status(503).json({ error: "Corsair DB not connected" });
+      console.warn("[Corsair Dashboard] Postgres pool database connection unavailable");
+      return res.status(503).json({ success: false, error: "Corsair database storage engine unavailable" });
     }
 
     const accountId = `slp_account_${slpId}`;
@@ -252,14 +266,28 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
     );
 
     // 3. Fetch ONLY ACTIVE assignments and patients
-    const { data: assignments } = await supabase
+    const { data: assignments, error: assignErr } = await supabase
       .from('patient_assignments')
-      .select('id, patient_id, status, assigned_at, created_at, profiles!patient_assignments_patient_id_fkey(id, full_name, email, phone, avatar_url)')
+      .select('id, patient_id, status, assigned_at, created_at')
       .eq('slp_id', slpId)
       .eq('status', 'ACTIVE');
 
-    // Get unique active patient IDs
-    const patientIds = Array.from(new Set((assignments || []).map((a: any) => a.patient_id)));
+    if (assignErr) {
+      console.warn("[Corsair Dashboard] Patient assignments notice:", assignErr.message);
+    }
+
+    const activeAssignments = assignments || [];
+    const patientIds = Array.from(new Set(activeAssignments.map((a: any) => a.patient_id)));
+
+    // Fetch patient profiles separately to prevent join syntax issues
+    let profileMap = new Map<string, any>();
+    if (patientIds.length > 0) {
+      const { data: pProfiles } = await supabase
+        .from('profiles')
+        .select('id, full_name, email, phone, avatar_url')
+        .in('id', patientIds);
+      (pProfiles || []).forEach((p: any) => profileMap.set(p.id, p));
+    }
 
     // Clean previous entities for this account to guarantee freshness
     await pool.query(
@@ -267,70 +295,91 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
       [accountId]
     );
 
-    // Sync active assignments and patients into corsair_entities in parallel
-    if (assignments && assignments.length > 0) {
+    // Sync active assignments and patients into corsair_entities
+    if (activeAssignments.length > 0) {
       await Promise.all(
-        assignments.flatMap(a => [
-          pool.query(
-            `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
-            [
-              `assignment_${a.id}`,
-              timestamp,
-              timestamp,
-              accountId,
-              a.id,
-              'patient_assignment',
-              '1',
-              JSON.stringify({
-                id: a.id,
-                slp_id: slpId,
-                patient_id: a.patient_id,
-                patient_name: (a.profiles as any)?.full_name || 'Patient',
-                status: a.status,
-                assigned_at: a.assigned_at || a.created_at
-              })
-            ]
-          ),
-          pool.query(
-            `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
-            [
-              `patient_${a.patient_id}`,
-              timestamp,
-              timestamp,
-              accountId,
-              a.patient_id,
-              'patient',
-              '1',
-              JSON.stringify({
-                patient_id: a.patient_id,
-                profiles: a.profiles
-              })
-            ]
-          )
-        ])
+        activeAssignments.flatMap((a: any) => {
+          const patientProf = profileMap.get(a.patient_id) || null;
+          return [
+            pool!.query(
+              `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
+              [
+                `assignment_${a.id}`,
+                timestamp,
+                timestamp,
+                accountId,
+                a.id,
+                'patient_assignment',
+                '1',
+                JSON.stringify({
+                  id: a.id,
+                  slp_id: slpId,
+                  patient_id: a.patient_id,
+                  patient_name: patientProf?.full_name || 'Patient',
+                  status: a.status,
+                  assigned_at: a.assigned_at || a.created_at
+                })
+              ]
+            ),
+            pool!.query(
+              `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
+              [
+                `patient_${a.patient_id}`,
+                timestamp,
+                timestamp,
+                accountId,
+                a.patient_id,
+                'patient',
+                '1',
+                JSON.stringify({
+                  patient_id: a.patient_id,
+                  profiles: patientProf
+                })
+              ]
+            )
+          ];
+        })
       );
     }
 
     // 4. Fetch practice sessions for active patients
     let sessions: any[] = [];
     if (patientIds.length > 0) {
-      const { data: s } = await supabase
+      const { data: sData, error: sessErr } = await supabase
         .from('sessions')
-        .select('id, user_id, exercise_id, created_at, duration, review_status, profiles!sessions_user_id_fkey(full_name, avatar_url), exercises!sessions_exercise_id_fkey(name)')
+        .select('id, user_id, exercise_id, created_at, duration, review_status')
         .in('user_id', patientIds)
         .order('created_at', { ascending: false });
-      sessions = s || [];
+
+      if (sessErr) {
+        console.warn("[Corsair Dashboard] Sessions fetch notice:", sessErr.message);
+      }
+
+      const rawSessions = sData || [];
+      const exerciseIds = Array.from(new Set(rawSessions.map((s: any) => s.exercise_id).filter(Boolean)));
+      
+      let exerciseMap = new Map<string, any>();
+      if (exerciseIds.length > 0) {
+        const { data: exData } = await supabase.from('exercises').select('id, name').in('id', exerciseIds);
+        (exData || []).forEach((ex: any) => exerciseMap.set(ex.id, ex));
+      }
+
+      sessions = rawSessions.map((s: any) => ({
+        ...s,
+        profiles: profileMap.get(s.user_id) || { full_name: 'Patient' },
+        exercises: exerciseMap.get(s.exercise_id) || { name: 'Practice Session' }
+      }));
     }
 
-    // Sync sessions into corsair_entities in parallel
+    // Sync sessions into corsair_entities
     if (sessions.length > 0) {
       await Promise.all(
-        sessions.map(s =>
-          pool.query(
+        sessions.map((s: any) =>
+          pool!.query(
             `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
@@ -364,7 +413,7 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
           .in('session_id', sessionIds)
       ]);
 
-      const metricQueries = (metrics || []).map(m => {
+      const metricQueries = (metrics || []).map((m: any) => {
         const rep = Number(m.repetitions) || 0;
         const pause = Number(m.pauses) || 0;
         const prol = Number(m.prolongations) || 0;
@@ -384,7 +433,7 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
           created_at: m.created_at
         };
 
-        return pool.query(
+        return pool!.query(
           `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
@@ -401,8 +450,8 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
         );
       });
 
-      const noteQueries = (notes || []).map(n =>
-        pool.query(
+      const noteQueries = (notes || []).map((n: any) =>
+        pool!.query(
           `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
@@ -480,20 +529,28 @@ app.get("/api/corsair/slp/:slpId/dashboard", async (req, res) => {
     // Total practice time calculation directly from actual recorded session durations
     const totalPracticeSeconds = allSessions.reduce((acc: number, s: any) => acc + (Number(s.duration) || 0), 0);
 
+    console.log(`[Corsair Dashboard] Successfully served dashboard for SLP ${slpId} (${patientCount} patients, ${sessionCount} sessions)`);
+
     return res.json({
-      patientCount,
-      sessionCount,
-      totalPracticeSeconds,
-      needsReviewSessions,
-      recentSessions,
-      inactivePatients,
-      speechMetrics: metricsData,
-      clinicianReviews: reviewsData,
-      source: "corsair"
+      success: true,
+      data: {
+        patientCount,
+        sessionCount,
+        totalPracticeSeconds,
+        needsReviewSessions,
+        recentSessions,
+        inactivePatients,
+        speechMetrics: metricsData,
+        clinicianReviews: reviewsData,
+        source: "corsair"
+      }
     });
   } catch (err: any) {
-    console.error("Dashboard error:", err);
-    return res.status(500).json({ error: "Failed to load dashboard from Corsair" });
+    console.error("[Corsair Dashboard Exception]:", err?.message || err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || "Failed to load dashboard from Corsair"
+    });
   }
 });
 
@@ -741,11 +798,9 @@ app.get("/api/practice/content", async (req, res) => {
 
 // Robust Speech Analysis Pipeline with Resilient Model Cascade & Audio Storage
 const SPEECH_AI_MODELS = [
-  'gemini-3.5-flash',
-  'gemini-3.8-flash',
-  'gemini-flash-latest',
-  'gemini-3.5-transcribe',
-  'gemini-2.5-flash'
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash'
 ];
 
 function normalizeCount(val: any): number {
@@ -1268,15 +1323,15 @@ Return a JSON object with this EXACT structure:
 
 app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
   let currentSessionId: string | null = null;
+  const supabase = getSupabaseClient(req);
   try {
-    const supabase = getSupabaseClient(req);
     if (!supabase) {
-      return res.status(401).json({ error: "Unauthorized" });
+      return res.status(401).json({ success: false, error: "Unauthorized" });
     }
 
     const { data: { user }, error: authErr } = await supabase.auth.getUser();
     if (authErr || !user) {
-      return res.status(401).json({ error: "Unauthorized" });
+      return res.status(401).json({ success: false, error: "Unauthorized" });
     }
 
     const sessionId = req.body?.sessionId || req.query?.sessionId;
@@ -1337,14 +1392,22 @@ app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
   } catch (err: any) {
     console.error("[DATABASE_SAVE_OR_ANALYSIS_FAILED] Speech analysis pipeline error:", err);
     
-    // Mark session analysis_status = failed if error occurred
-    if (currentSessionId && pool) {
+    // Mark session analysis_status = failed if error occurred across both Supabase and Pool
+    if (currentSessionId) {
       try {
-        await pool.query("UPDATE sessions SET analysis_status = 'failed' WHERE id = $1", [currentSessionId]);
-      } catch (_) {}
+        if (supabase) {
+          await supabase.from("sessions").update({ analysis_status: 'failed' }).eq("id", currentSessionId);
+        }
+        if (pool) {
+          await pool.query("UPDATE sessions SET analysis_status = 'failed' WHERE id = $1", [currentSessionId]);
+        }
+      } catch (markErr: any) {
+        console.warn("Could not set session failed status:", markErr.message);
+      }
     }
 
     return res.status(503).json({
+      success: false,
       error: "Speech analysis is temporarily unavailable.",
       details: err.message
     });
@@ -1354,12 +1417,12 @@ app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
 // Dedicated retry analysis endpoint for the same saved session
 app.post("/api/sessions/:sessionId/retry-analysis", async (req, res) => {
   const { sessionId } = req.params;
+  const supabase = getSupabaseClient(req);
   try {
-    const supabase = getSupabaseClient(req);
-    if (!supabase) return res.status(401).json({ error: "Unauthorized" });
+    if (!supabase) return res.status(401).json({ success: false, error: "Unauthorized" });
 
     const { data: { user }, error: authErr } = await supabase.auth.getUser();
-    if (authErr || !user) return res.status(401).json({ error: "Unauthorized" });
+    if (authErr || !user) return res.status(401).json({ success: false, error: "Unauthorized" });
 
     const { data: sessionInfo, error: sessionErr } = await supabase
       .from("sessions")
@@ -1368,28 +1431,41 @@ app.post("/api/sessions/:sessionId/retry-analysis", async (req, res) => {
       .single();
 
     if (sessionErr || !sessionInfo) {
-      return res.status(404).json({ error: "Session not found" });
+      return res.status(404).json({ success: false, error: "Session not found" });
     }
 
     if (sessionInfo.user_id !== user.id) {
-      return res.status(403).json({ error: "Forbidden: Not session owner" });
+      return res.status(403).json({ success: false, error: "Forbidden: Not session owner" });
     }
 
-    if (!pool) {
-      return res.status(503).json({ error: "Database storage not available" });
+    let audioBuffer: Buffer | null = null;
+    let mimeType = "audio/webm";
+
+    if (pool) {
+      const audioRow = await pool.query(
+        "SELECT audio_data, content_type FROM session_audio WHERE session_id = $1",
+        [sessionId]
+      );
+      if (audioRow.rows.length > 0 && audioRow.rows[0].audio_data) {
+        audioBuffer = audioRow.rows[0].audio_data;
+        mimeType = audioRow.rows[0].content_type || "audio/webm";
+      }
     }
 
-    const audioRow = await pool.query(
-      "SELECT audio_data, content_type FROM session_audio WHERE session_id = $1",
-      [sessionId]
-    );
-
-    if (audioRow.rows.length === 0 || !audioRow.rows[0].audio_data) {
-      return res.status(404).json({ error: "Audio recording could not be found for session." });
+    if (!audioBuffer) {
+      // Try download from Supabase storage
+      try {
+        const { data: storageFile } = await supabase.storage.from("session_audio").download(`${user.id}/${sessionId}.webm`);
+        if (storageFile) {
+          const arrayBuffer = await storageFile.arrayBuffer();
+          audioBuffer = Buffer.from(arrayBuffer);
+        }
+      } catch (_) {}
     }
 
-    const audioBuffer = audioRow.rows[0].audio_data;
-    const mimeType = audioRow.rows[0].content_type || "audio/webm";
+    if (!audioBuffer || audioBuffer.length === 0) {
+      return res.status(404).json({ success: false, error: "Audio recording could not be found for session." });
+    }
 
     const result = await runSpeechAnalysisPipeline({
       sessionId,
@@ -1404,7 +1480,14 @@ app.post("/api/sessions/:sessionId/retry-analysis", async (req, res) => {
     return res.json(result);
   } catch (err: any) {
     console.error(`[RETRY_ANALYSIS_FAILED] for session ${sessionId}:`, err);
+    if (sessionId && supabase) {
+      try {
+        await supabase.from("sessions").update({ analysis_status: 'failed' }).eq("id", sessionId);
+        if (pool) await pool.query("UPDATE sessions SET analysis_status = 'failed' WHERE id = $1", [sessionId]);
+      } catch (_) {}
+    }
     return res.status(503).json({
+      success: false,
       error: "Speech analysis is temporarily unavailable.",
       details: err.message
     });

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Search, Send, User, Loader2, AlertCircle, FileText } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
+import { parseJsonResponseSafely } from "../../lib/apiUtils";
 
 type Message = {
   id: string;
@@ -50,20 +51,20 @@ export function SLPAssistant() {
         body: JSON.stringify({ message: text }),
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to get response");
+      const parsed = await parseJsonResponseSafely(response);
+      if (!parsed.ok) {
+        throw new Error(parsed.errorMessage || "Failed to get response");
       }
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: data.text,
+        content: parsed.data?.text || "No response content.",
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err: any) {
       console.error(err);
-      setError("Assistant is temporarily unavailable.");
+      setError(err.message || "Assistant is temporarily unavailable.");
     } finally {
       setIsLoading(false);
     }
