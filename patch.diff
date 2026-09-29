@@ -1,0 +1,24 @@
+--- server.ts
++++ server.ts
+@@ -268,10 +268,7 @@
+ 
+     } catch (err: any) {
+-      console.warn("Corsair workflow execution failed:", err);
+-      const isNotConfigured = err.message?.includes("Workflow execution is not enabled") || err.message?.includes("not found") || err.message?.includes("fetch failed");
+-      const status = isNotConfigured ? "Not configured" : "Failed";
+-      
++      console.error("Corsair workflow execution failed:", err);
+       
+       if (pool) {
+         try {
+-          const details = JSON.stringify({ workflow: "Session Review", status, details: err.message || "Unknown error" });
++          const details = JSON.stringify({ workflow: "Session Review", status: "Failed", details: err.message || "Unknown error" });
+           await pool.query(
+             "INSERT INTO audit_logs (event_type, description) VALUES ($1, $2)",
+             ['WORKFLOW_EXECUTION', details]
+           );
+         } catch(e) { console.error("Audit log error:", e); }
+       }
++      return res.status(500).json({ error: "Failed to queue session for review." });
+ 
+     }
