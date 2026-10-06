@@ -132,7 +132,7 @@ export function DemoRoleSelectPage() {
                 </div>
                 <div className="flex items-start gap-2.5 text-xs text-slate-700">
                   <CheckCircle2 className="h-4 w-4 text-teal-600 shrink-0 mt-0.5" />
-                  <span>AI Assistant powered by Corsair MCP integration</span>
+                  <span>AI Clinical Assistant powered by Google Gemini</span>
                 </div>
               </div>
             </div>
