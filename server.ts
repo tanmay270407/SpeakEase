@@ -220,7 +220,7 @@ const upload = multer({ storage: multer.memoryStorage() });
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ 
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
-    retryOptions: { attempts: 1 }
+    retryOptions: { attempts: 3 }
   }
 }) : null;
 
@@ -859,8 +859,10 @@ app.get("/api/practice/content", async (req, res) => {
 
 // Robust Speech Analysis Pipeline with Resilient Model Cascade & Audio Storage
 const SPEECH_AI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-2.5-flash',
   'gemini-3.5-transcribe',
-  'gemini-3.8-flash'
+  'gemini-3.1-flash-lite'
 ];
 
 function normalizeCount(val: any): number {
@@ -1179,7 +1181,7 @@ Return a JSON object with this EXACT structure:
 }`;
 
   let corsairObservationText = "";
-  for (const model of ['gemini-3.8-flash', 'gemini-3.1-pro-preview']) {
+  for (const model of ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite']) {
     try {
       if (!ai) break;
       const obsRes = await ai.models.generateContent({
@@ -1198,7 +1200,7 @@ Return a JSON object with this EXACT structure:
         break;
       }
     } catch (obsErr: any) {
-      console.warn(`[CORSAIR_ANALYSIS_NOTICE] Model ${model} observation notice:`, obsErr.message);
+      console.log(`[observation-generation] Model ${model} fallback engaged:`, obsErr?.status || "Rate-limited/Unavailable");
     }
   }
 
@@ -1386,8 +1388,8 @@ Return a JSON object with this EXACT structure:
 
 app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
   let currentSessionId: string | null = null;
+  const supabase = getSupabaseClient(req);
   try {
-    const supabase = getSupabaseClient(req);
     if (!supabase) {
       console.log("No supabase client created, authHeader:", req.headers.authorization);
       return res.status(401).json({ error: "Unauthorized" });
@@ -1462,7 +1464,7 @@ app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
       try {
         if (pool) {
           await pool.query("UPDATE sessions SET analysis_status = 'failed' WHERE id = $1", [currentSessionId]);
-        } else {
+        } else if (supabase) {
           await supabase.from("sessions").update({ analysis_status: "failed" }).eq("id", currentSessionId);
         }
       } catch (_) {}
@@ -2396,7 +2398,7 @@ Rules:
     let successfulModel: string | null = null;
     let modelCascadeError: any = null;
 
-    for (const model of ['gemini-3.8-flash', 'gemini-3.1-pro-preview']) {
+    for (const model of ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite']) {
       try {
         const chat = ai.chats.create({
           model,

@@ -25,6 +25,7 @@ import {
   User,
   Video,
   Star,
+  X,
 } from 'lucide-react';
 
 export function MySLPPage() {

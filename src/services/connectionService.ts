@@ -592,7 +592,7 @@ export const connectionService = {
             reason_details: data.reason_details,
           }),
         },
-      ]);
+      ] as any);
 
     if (error) {
       throw new Error(error.message || 'Failed to save disconnect reason.');
