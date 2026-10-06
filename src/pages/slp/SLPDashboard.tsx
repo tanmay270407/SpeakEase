@@ -48,8 +48,14 @@ export function SLPDashboard() {
               headers: { 'Authorization': `Bearer ${session.access_token}` }
             });
             if (!corsairRes.ok) {
-              const errData = await corsairRes.json();
-              throw new Error(errData.error || errData.details || "Corsair API unavailable");
+              let errMsg = "Corsair API unavailable";
+              try {
+                const errData = await corsairRes.json();
+                errMsg = errData.error || errData.details || errMsg;
+              } catch {
+                errMsg = `HTTP ${corsairRes.status}: Unable to reach Corsair API`;
+              }
+              throw new Error(errMsg);
             }
             const dashboardData = await corsairRes.json();
             setPatientCount(dashboardData.patientCount);

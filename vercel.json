@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "dist/server.cjs"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",

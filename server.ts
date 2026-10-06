@@ -2534,7 +2534,15 @@ async function startServer() {
 
 
 export default app;
-if (process.env.NODE_ENV !== "production" || process.env.RUN_SERVER === "true" || (!process.env.VERCEL && !process.env.AWS_REGION)) {
+
+const isServerless = Boolean(
+  process.env.VERCEL ||
+  process.env.VERCEL_ENV ||
+  process.env.AWS_REGION ||
+  process.env.LAMBDA_TASK_ROOT
+);
+
+if (!isServerless) {
   startServer();
 }
 
