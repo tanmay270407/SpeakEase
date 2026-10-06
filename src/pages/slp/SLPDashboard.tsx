@@ -199,57 +199,6 @@ export function SLPDashboard() {
         </div>
       </div>
 
-      {/* Google Gemini Clinical Intelligence Briefing */}
-      <div className="relative overflow-hidden rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-teal-50/50 p-5 shadow-xs">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-600/10 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                Google Gemini Clinical Intelligence
-              </span>
-              <span className="text-xs text-slate-400">• Active</span>
-            </div>
-            <h3 className="text-base font-semibold text-slate-900">
-              {needsReviewSessions.length > 0
-                ? `${needsReviewSessions.length} session${needsReviewSessions.length > 1 ? 's' : ''} awaiting your clinical observation`
-                : 'All patient practice sessions are clinically up to date'}
-            </h3>
-            <p className="text-xs text-slate-600 max-w-2xl leading-relaxed">
-              {needsReviewSessions.length > 0 ? (
-                <>
-                  Gemini acoustic models have completed preliminary transcription and metric extraction for{' '}
-                  <span className="font-semibold text-slate-800">
-                    {needsReviewSessions[0]?.profiles?.full_name || 'your assigned patient'}
-                  </span>
-                  . Observations for repetitions, pauses, and speech rate are prepared for your clinical review.
-                </>
-              ) : (
-                'Assigned patients are maintaining steady speech practice adherence. Gemini acoustic pipelines are monitoring speech rate, sound repetitions, and breath pacing in real time.'
-              )}
-            </p>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {needsReviewSessions.length > 0 && (
-              <Link
-                to={`/slp/sessions?sessionId=${needsReviewSessions[0]?.id}`}
-                className="flex items-center gap-1.5 text-xs px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium shadow-xs transition-colors"
-              >
-                Review Session
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-            )}
-            <Link
-              to="/slp/assistant"
-              className="flex items-center gap-1.5 text-xs px-3.5 py-2 border border-indigo-200 bg-white hover:bg-indigo-50/50 text-indigo-700 rounded-lg font-medium transition-colors"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-              Ask Gemini Assistant
-            </Link>
-          </div>
-        </div>
-      </div>
-
       <div className="grid gap-6 sm:grid-cols-2 md:grid-cols-4">
         <Card className="bg-white border-slate-200 shadow-sm">
           <CardContent className="pt-6">
