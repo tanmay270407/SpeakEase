@@ -208,7 +208,8 @@ export function ExerciseRecordingPage() {
         user_id: profile!.id,
         exercise_id: exercise.id,
         duration: authoritativeDuration,
-        review_status: 'NOT_REVIEWED'
+        review_status: 'NOT_REVIEWED',
+        analysis_status: 'analyzing'
       }).select().single();
 
       if (sessionError) throw sessionError;

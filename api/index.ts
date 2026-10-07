@@ -17,6 +17,10 @@ async function getApp() {
 }
 
 export default async function handler(req: Request, res: Response) {
+  const matchedPath = (req.headers['x-matched-path'] || req.headers['x-invoke-path'] || req.headers['x-vercel-matched-path']) as string | undefined;
+  if (matchedPath && req.url === '/api' && matchedPath !== '/api') {
+    req.url = matchedPath;
+  }
   const app = await getApp();
   return app(req, res);
 }

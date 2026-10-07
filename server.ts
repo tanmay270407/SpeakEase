@@ -750,7 +750,7 @@ app.get("/api/audio/:sessionId", async (req, res) => {
     // Authorize: Only returns session if RLS allows (user owns it or assigned SLP)
     const { data: sessionInfo, error: sessionErr } = await supabase
       .from('sessions')
-      .select('id')
+      .select('id, user_id')
       .eq('id', sessionId)
       .single();
 
@@ -758,19 +758,38 @@ app.get("/api/audio/:sessionId", async (req, res) => {
       return res.status(403).json({ error: "Forbidden or Not Found" });
     }
 
-    if (!pool) {
-       return res.status(503).json({ error: "Durable storage not configured" });
-    }
-    
-    const result = await pool.query('SELECT audio_data, content_type FROM session_audio WHERE session_id = $1', [sessionId]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Audio could not be saved." });
+    let audioData: Buffer | null = null;
+    let contentType = 'audio/webm';
+
+    if (pool) {
+      const result = await pool.query('SELECT audio_data, content_type FROM session_audio WHERE session_id = $1', [sessionId]);
+      if (result.rows.length > 0 && result.rows[0].audio_data) {
+        audioData = result.rows[0].audio_data;
+        contentType = result.rows[0].content_type || 'audio/webm';
+      }
     }
 
-    const { audio_data, content_type } = result.rows[0];
+    if (!audioData) {
+      try {
+        const { data: storageBlob } = await supabase.storage
+          .from("session_audio")
+          .download(`${sessionInfo.user_id}/${sessionId}.webm`);
+        if (storageBlob) {
+          const ab = await storageBlob.arrayBuffer();
+          audioData = Buffer.from(ab);
+          contentType = storageBlob.type || 'audio/webm';
+        }
+      } catch (stErr: any) {
+        console.warn("Storage fallback notice:", stErr.message);
+      }
+    }
+
+    if (!audioData || audioData.length === 0) {
+      return res.status(404).json({ error: "Audio could not be saved." });
+    }
     
-    res.setHeader('Content-Type', content_type);
-    res.send(audio_data);
+    res.setHeader('Content-Type', contentType);
+    res.send(audioData);
   } catch (err: any) {
     console.error("Audio fetch error:", err);
     res.status(500).json({ error: "Internal error" });
