@@ -2,7 +2,6 @@ import express from "express";
 import path from "path";
 import multer from "multer";
 import { spawnSync } from "child_process";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
 import dotenv from "dotenv";
@@ -14,7 +13,7 @@ import { corsairClient } from "./corsair";
 
 dotenv.config({ override: true });
 
-import { runSpeechAnalysisPipeline } from "./src/services/ai/speechAnalysisPipeline.ts";
+import { runSpeechAnalysisPipeline } from "./src/services/ai/speechAnalysisPipeline";
 
 const { Pool } = pg;
 const POOLER_DB_URL = "postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
@@ -2133,6 +2132,7 @@ Rules:
 // Vite middleware for development
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -2158,10 +2158,19 @@ const isServerless = Boolean(
   process.env.VERCEL ||
   process.env.VERCEL_ENV ||
   process.env.AWS_REGION ||
-  process.env.LAMBDA_TASK_ROOT
+  process.env.LAMBDA_TASK_ROOT ||
+  process.env.VERCEL_URL
 );
 
-if (!isServerless) {
+const isDirectRun = Boolean(
+  process.argv[1] && (
+    process.argv[1].endsWith('server.ts') ||
+    process.argv[1].endsWith('server.js') ||
+    process.argv[1].endsWith('server.cjs')
+  )
+);
+
+if (!isServerless && (isDirectRun || process.env.NODE_ENV !== "production")) {
   startServer();
 }
 
