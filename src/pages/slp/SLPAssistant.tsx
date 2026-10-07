@@ -40,6 +40,9 @@ export function SLPAssistant() {
     setIsLoading(true);
     setError(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
     try {
       const response = await fetch("/api/slp/assistant", {
         method: "POST",
@@ -48,7 +51,9 @@ export function SLPAssistant() {
           "Authorization": `Bearer ${session?.access_token}`,
         },
         body: JSON.stringify({ message: text }),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
 
       const data = await response.json();
       if (!response.ok) {
@@ -62,8 +67,9 @@ export function SLPAssistant() {
       };
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err: any) {
+      clearTimeout(timeoutId);
       console.error(err);
-      setError("Assistant is temporarily unavailable.");
+      setError(err.name === 'AbortError' ? "Unable to retrieve records right now. Please try again." : "Assistant is temporarily unavailable.");
     } finally {
       setIsLoading(false);
     }
@@ -133,7 +139,7 @@ export function SLPAssistant() {
                 <Loader2 className="w-4 h-4 animate-spin" />
               </div>
               <div className="bg-white border border-slate-200 rounded-md px-4 py-3 text-sm text-slate-500">
-                Searching records...
+                Checking your patient records...
               </div>
             </div>
           )}

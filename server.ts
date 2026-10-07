@@ -1200,7 +1200,7 @@ app.post("/api/slp/assistant", async (req, res) => {
 
     const { data: slpProfile, error: slpErr } = await supabase
       .from("slps")
-      .select("id")
+      .select("id, name, clinic_name")
       .eq("user_id", userAuth.user.id)
       .single();
 
@@ -2008,123 +2008,250 @@ Rules:
 - Action Verification: Confirm database results accurately. State clearly when an exercise was created as an AI Draft or enabled for patients.
 - Tone: Professional, clinically disciplined, clear, and objective.`;
 
-    if (!ai) {
-      throw new Error("GEMINI_API_KEY is not configured.");
+    const lowerPrompt = userPrompt.toLowerCase();
+
+    // 1. Off-topic Scope Guard
+    const isOffTopic = /^(what is the weather|weather today|tell me a joke|write (a|me) poem|who is (elon|trump|biden|modi|messi|ronaldo)|stock price|recipe for)/i.test(lowerPrompt) ||
+      (lowerPrompt.includes("weather") && !lowerPrompt.includes("patient") && !lowerPrompt.includes("session")) ||
+      (lowerPrompt.includes("poem") && !lowerPrompt.includes("exercise"));
+
+    if (isOffTopic) {
+      return res.json({
+        text: "I am your SpeakEase Clinical Assistant. I can help you with your dashboard, connected patients, session reviews, speech metrics, exercises, and practice requests."
+      });
     }
 
-    let chatResponse: any = null;
-    let successfulModel: string | null = null;
-    let modelCascadeError: any = null;
+    // 2. Fast Intent 1: Patient Count & Activity Summary ("how many patients do I have?", "how many patient connected to me?", "patient count")
+    if (
+      (lowerPrompt.includes("how many") && (lowerPrompt.includes("patient") || lowerPrompt.includes("connected"))) ||
+      lowerPrompt.includes("patient count") ||
+      lowerPrompt === "patients count" ||
+      lowerPrompt === "my patients count" ||
+      (lowerPrompt.includes("count") && lowerPrompt.includes("patient"))
+    ) {
+      const { data: assignments } = await supabase
+        .from('patient_assignments')
+        .select('patient_id')
+        .eq('slp_id', slpId)
+        .eq('status', 'ACTIVE');
 
-    for (const model of ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite']) {
-      try {
-        const chat = ai.chats.create({
-          model,
-          config: {
-            systemInstruction,
-            tools: [{ functionDeclarations: clinicalToolDeclarations }],
-          },
-          history: formattedHistory.length > 0 ? formattedHistory : undefined
+      const patientIds = (assignments || []).map((a: any) => a.patient_id);
+      const totalPatients = patientIds.length;
+
+      if (totalPatients === 0) {
+        return res.json({
+          text: "You currently have **0 connected patients**.\n\nYou can share your invite code or check the Find Patients tab to connect with patients."
         });
-
-        let curResponse = await chat.sendMessage({ message: userPrompt });
-
-        // Process function calls
-        let iterations = 0;
-        while (curResponse.functionCalls && curResponse.functionCalls.length > 0 && iterations < 6) {
-          const functionResponses = [];
-          for (const call of curResponse.functionCalls) {
-            try {
-              const endpointFn = (clinicalEndpoints as any)[call.name];
-              if (endpointFn) {
-                const result = await endpointFn(call.args);
-                functionResponses.push({ name: call.name, response: { result } });
-              } else {
-                functionResponses.push({ name: call.name, response: { error: `Unknown tool: ${call.name}` } });
-              }
-            } catch (e: any) {
-              functionResponses.push({ name: call.name, response: { error: e.message } });
-            }
-          }
-          curResponse = await chat.sendMessage({
-            message: functionResponses.map(fr => ({
-              functionResponse: { name: fr.name, response: fr.response }
-            }))
-          });
-          iterations++;
-        }
-
-        chatResponse = curResponse;
-        successfulModel = model;
-        break;
-      } catch (err: any) {
-        console.warn(`[assistant-chat] Model ${model} failed:`, err.message || err);
-        modelCascadeError = err;
       }
+
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [todaySessionsRes, pendingReviewRes, recentSessionsRes] = await Promise.all([
+        supabase.from('sessions').select('user_id').in('user_id', patientIds).gte('created_at', startOfToday),
+        supabase.from('sessions').select('id').in('user_id', patientIds).in('review_status', ['READY_FOR_REVIEW', 'NOT_REVIEWED']),
+        supabase.from('sessions').select('user_id').in('user_id', patientIds).gte('created_at', threeDaysAgo)
+      ]);
+
+      const activeTodayUserIds = new Set((todaySessionsRes.data || []).map((s: any) => s.user_id));
+      const recentUserIds = new Set((recentSessionsRes.data || []).map((s: any) => s.user_id));
+      const needingReviewCount = (pendingReviewRes.data || []).length;
+      const inactiveCount = patientIds.filter(id => !recentUserIds.has(id)).length;
+
+      let text = `You currently have **${totalPatients} connected patient${totalPatients === 1 ? '' : 's'}**.`;
+      text += `\n• **${activeTodayUserIds.size}** active today\n• **${needingReviewCount}** session(s) awaiting your review\n• **${inactiveCount}** patient(s) have not practiced recently`;
+
+      return res.json({ text });
     }
 
-    if (chatResponse && chatResponse.text) {
-      return res.json({ text: chatResponse.text });
-    }
-
-    console.warn("Gemini chat execution fallback:", modelCascadeError?.message);
-
-    // Robust fallback execution using Corsair direct NLP & tool executor
-    // If model is rate-limited, parse intent and execute real Corsair MCP tool directly
-    const lower = userPrompt.toLowerCase();
-    let fallbackText = "";
-
-    if (lower.includes("connection request") || lower.includes("pending request") || lower.includes("who requested")) {
-      const result = await clinicalEndpoints.get_connection_requests({});
+    // 3. Fast Intent 2: Review Needs ("which patients need review?", "who needs my review?", "sessions waiting for review", "who needs attention?")
+    if (
+      lowerPrompt.includes("need review") ||
+      lowerPrompt.includes("needs review") ||
+      lowerPrompt.includes("waiting for review") ||
+      lowerPrompt.includes("awaiting review") ||
+      lowerPrompt.includes("needs my review") ||
+      lowerPrompt.includes("need my review") ||
+      lowerPrompt.includes("who needs attention")
+    ) {
+      const result = await clinicalEndpoints.get_sessions({ review_status: 'READY_FOR_REVIEW', limit: 10 });
       if (result.count === 0) {
-        fallbackText = "You currently have no pending patient connection requests.";
-      } else {
-        fallbackText = `You have ${result.count} pending connection request(s):\n` +
-          result.requests.map((r: any) => `• **${r.patient_name}** (${r.patient_email || 'No email'}) — Sent ${new Date(r.created_at).toLocaleDateString()}`).join("\n");
+        return res.json({
+          text: "There are currently no sessions waiting for your review. All patient practice sessions have been reviewed!"
+        });
       }
-    } else if (lower.includes("patient") && (lower.includes("show") || lower.includes("my") || lower.includes("list") || lower.includes("who"))) {
-      const filter = lower.includes("today") ? 'practiced_today' : (lower.includes("haven't") || lower.includes("inactive") || lower.includes("week") ? 'inactive' : 'all');
+      const list = result.sessions.map((s: any) => `• **${s.patient_name}** — ${s.exercise_name} (${s.duration}s, recorded ${new Date(s.created_at).toLocaleDateString()})`).join("\n");
+      return res.json({
+        text: `You have **${result.count} session(s)** awaiting your review:\n\n${list}\n\nYou can review audio recordings and submit feedback directly in the Sessions tab.`
+      });
+    }
+
+    // 4. Fast Intent 3: Connection Requests ("who requested", "pending requests", "connection request", "do I have any connection requests")
+    if (
+      lowerPrompt.includes("connection request") ||
+      lowerPrompt.includes("pending request") ||
+      lowerPrompt.includes("who requested") ||
+      lowerPrompt.includes("incoming request")
+    ) {
+      const result = await clinicalEndpoints.get_connection_requests({ status: 'pending' });
+      if (result.count === 0) {
+        return res.json({
+          text: "You currently have **0 pending patient connection requests**."
+        });
+      }
+      const list = result.requests.map((r: any) => `• **${r.patient_name}** (${r.patient_email || 'No email'}) — Sent ${new Date(r.created_at).toLocaleDateString()}`).join("\n");
+      return res.json({
+        text: `You have **${result.count} pending connection request(s)**:\n\n${list}\n\nYou can accept or decline them in the Requests section.`
+      });
+    }
+
+    // 5. Fast Intent 4: Inactive Patients ("who hasn't practiced", "who has not practiced", "inactive patients", "lowest practice activity")
+    if (
+      lowerPrompt.includes("haven't practiced") ||
+      lowerPrompt.includes("has not practiced") ||
+      lowerPrompt.includes("inactive") ||
+      lowerPrompt.includes("not practiced") ||
+      (lowerPrompt.includes("lowest") && lowerPrompt.includes("activity"))
+    ) {
+      const result = await clinicalEndpoints.get_patients({ filter: 'inactive' });
+      if (result.count === 0) {
+        return res.json({
+          text: "All your connected patients have recorded practice activity in the last 3 days! Keep up the momentum."
+        });
+      }
+      const list = result.patients.map((p: any) => `• **${p.patient_name}** — Last practiced: ${p.last_session_at ? new Date(p.last_session_at).toLocaleDateString() : 'No recorded sessions yet'}`).join("\n");
+      return res.json({
+        text: `The following **${result.count} patient(s)** have not practiced recently:\n\n${list}`
+      });
+    }
+
+    // 6. Fast Intent 5: Patient List ("show me my patients", "list my patients", "who are my patients", "show my patients")
+    if (
+      (lowerPrompt.includes("show") || lowerPrompt.includes("list") || lowerPrompt.includes("who are") || lowerPrompt.includes("view")) &&
+      lowerPrompt.includes("patient") &&
+      !lowerPrompt.includes("tell me about")
+    ) {
+      const filter = lowerPrompt.includes("today") ? 'practiced_today' : 'all';
       const result = await clinicalEndpoints.get_patients({ filter });
       if (result.count === 0) {
-        fallbackText = filter === 'practiced_today' ? "None of your connected patients have recorded practice sessions today." : "You have no active patients matching this query.";
-      } else {
-        fallbackText = `Here are your ${filter === 'practiced_today' ? 'patients who practiced today' : (filter === 'inactive' ? 'patients needing practice reminders' : 'connected patients')} (${result.count}):\n` +
-          result.patients.map((p: any) => `• **${p.patient_name}** — ${p.total_sessions} total sessions (${p.pending_review_count} needing review)`).join("\n");
+        return res.json({
+          text: filter === 'practiced_today' ? "None of your connected patients have recorded practice sessions today." : "You currently have no active patients assigned to your account."
+        });
       }
-    } else if (lower.includes("session") || lower.includes("review")) {
-      const review_status = lower.includes("need") || lower.includes("ready") ? 'READY_FOR_REVIEW' : (lower.includes("reviewed") ? 'REVIEWED' : 'all');
-      const result = await clinicalEndpoints.get_sessions({ review_status, limit: 10 });
-      if (result.count === 0) {
-        fallbackText = review_status === 'READY_FOR_REVIEW' ? "There are currently no sessions waiting for your review." : "No sessions found matching your criteria.";
-      } else {
-        fallbackText = `Found ${result.count} session(s):\n` +
-          result.sessions.map((s: any) => `• **${s.patient_name}** — ${s.exercise_name} (${s.duration}s, ${new Date(s.created_at).toLocaleDateString()}) [Status: ${s.review_status}]`).join("\n");
-      }
-    } else if (lower.includes("create") && lower.includes("exercise")) {
-      const res = await clinicalEndpoints.create_exercise({
-        name: "Gentle Phonation & Easy Onset Practice",
-        description: "Targeted exercise for soft glottal attack and steady vocal airflow.",
-        instructions: "Take a relaxed diaphragmatic breath. Produce prolonged vowels (/a/, /i/, /u/) with gentle airflow onset and minimal laryngeal tension.",
-        category: "Phonation & Breath Control",
-        duration: 60
+      const list = result.patients.map((p: any) => `• **${p.patient_name}** — ${p.total_sessions} session(s) total (${p.pending_review_count} awaiting review)`).join("\n");
+      return res.json({
+        text: `Here are your connected patients (${result.count}):\n\n${list}`
       });
-      fallbackText = res.message;
-    } else if (lower.includes("enable") || lower.includes("assign")) {
-      const isAll = lower.includes("all");
-      const res = await clinicalEndpoints.assign_exercise({
-        exercise_name_or_id: "Diadochokinetic (DDK) Rate Test",
-        target: isAll ? 'all' : 'single',
-        patient_name: isAll ? undefined : "Tanmay",
-        confirmed: lower.includes("confirm") || lower.includes("yes")
-      });
-      fallbackText = res.message || res.error || "Assignment processed.";
-    } else {
-      fallbackText = "I am your SpeakEase Clinical Assistant. You can ask me to view connected patients, check sessions needing review, summarize patient practice metrics, view connection requests, or create and assign exercises.";
     }
 
-    return res.json({ text: fallbackText });
+    // 7. Fast Intent 6: Recent Sessions ("show my recent sessions", "recent sessions", "today's sessions", "show recent sessions")
+    if (
+      (lowerPrompt.includes("session") || lowerPrompt.includes("sessions")) &&
+      (lowerPrompt.includes("recent") || lowerPrompt.includes("show") || lowerPrompt.includes("latest") || lowerPrompt.includes("today"))
+    ) {
+      const practiced_today = lowerPrompt.includes("today");
+      const result = await clinicalEndpoints.get_sessions({ limit: 10, practiced_today });
+      if (result.count === 0) {
+        return res.json({
+          text: practiced_today ? "No practice sessions have been completed today yet." : "No recent patient sessions found in your dashboard records."
+        });
+      }
+      const list = result.sessions.map((s: any) => {
+        const pace = s.metrics?.speech_rate ? ` (${s.metrics.speech_rate} WPM)` : '';
+        return `• **${s.patient_name}** — ${s.exercise_name} [${s.duration}s${pace}] — ${new Date(s.created_at).toLocaleDateString()} (${s.review_status})`;
+      }).join("\n");
+      return res.json({
+        text: `Found **${result.count} recent session(s)**:\n\n${list}`
+      });
+    }
+
+    // 8. Fast Intent 7: Patient-Specific Query ("Tell me about Rahul", "Show Rahul's latest session", "What was Rahul's speech rate?")
+    const aboutMatch = lowerPrompt.match(/(?:tell me about|info on|about|status of|how is|check on|latest session of|speech rate of|exercises assigned to)\s+([a-zA-Z0-9_\-\s]+)/i);
+    if (aboutMatch && aboutMatch[1]) {
+      const rawName = aboutMatch[1].replace(/[?.!]+$/, "").trim();
+      if (rawName.length > 1 && !['all', 'my patients', 'sessions', 'the weather', 'today'].includes(rawName)) {
+        const summary: any = await clinicalEndpoints.get_patient_summary({ patient_name: rawName });
+        if (summary.not_found || summary.error) {
+          return res.json({
+            text: `I couldn't find an authorized patient named "${rawName}" in your patient list. Please verify the patient name or check your connected patients in the My Patients tab.`
+          });
+        }
+
+        const latest = summary.recent_sessions?.[0];
+        let responseText = `**${summary.patient_name}** has completed **${summary.total_recorded_sessions} recorded practice session(s)**.`;
+        if (latest) {
+          responseText += `\n\n**Latest Session (${new Date(latest.date).toLocaleDateString()}):**\n• Routine: ${latest.exercise}\n• Duration: ${latest.duration} seconds\n• Speech Rate: ${latest.speech_rate ? `${latest.speech_rate} WPM` : 'Processing'}\n• Pauses: ${latest.pauses ?? 0} observed\n• Repetitions: ${latest.repetitions ?? 0} possible\n• Status: ${latest.review_status}`;
+          if (latest.observation) {
+            responseText += `\n• Observation: "${latest.observation}"`;
+          }
+        }
+        return res.json({ text: responseText });
+      }
+    }
+
+    // 9. Natural Language / Complex Reasoning Queries using Gemini (with strict 4s timeout)
+    if (ai) {
+      try {
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 4000));
+        
+        const geminiPromise = (async () => {
+          const { data: assignments } = await supabase
+            .from('patient_assignments')
+            .select('patient_id')
+            .eq('slp_id', slpId)
+            .eq('status', 'ACTIVE');
+          const patientIds = (assignments || []).map((a: any) => a.patient_id);
+
+          const [patientsRes, sessionsRes] = await Promise.all([
+            supabase.from('profiles').select('id, full_name').in('id', patientIds).limit(10),
+            supabase.from('sessions').select('id, user_id, duration, review_status, created_at').in('user_id', patientIds).order('created_at', { ascending: false }).limit(5)
+          ]);
+
+          const promptContext = `You are a concise personal clinical assistant for SLP ${slpProfile.name || 'Clinician'}.
+AUTHORIZED SLP DASHBOARD CONTEXT:
+- Total Connected Patients: ${patientIds.length}
+- Connected Patients: ${JSON.stringify(patientsRes.data || [])}
+- Recent Sessions: ${JSON.stringify(sessionsRes.data || [])}
+
+USER QUERY: "${userPrompt}"
+
+RULES:
+- Answer directly and factually using only the authorized context above.
+- NEVER invent numbers, names, or metrics.
+- Keep the response short, clear, and professional.`;
+
+          const resp = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: promptContext,
+            config: { maxOutputTokens: 250 }
+          });
+          return resp.text;
+        })();
+
+        const aiResponse: any = await Promise.race([geminiPromise, timeoutPromise]);
+        if (aiResponse && aiResponse.trim().length > 0) {
+          return res.json({ text: aiResponse.trim() });
+        }
+      } catch (_e) {
+        // Fallback below
+      }
+    }
+
+    // 10. Default Fast Fallback Response
+    const { data: assignments } = await supabase
+      .from('patient_assignments')
+      .select('patient_id')
+      .eq('slp_id', slpId)
+      .eq('status', 'ACTIVE');
+    const count = assignments?.length || 0;
+
+    return res.json({
+      text: `I am your personal SpeakEase Clinical Assistant. You currently have **${count} connected patient(s)**.\n\nYou can ask me:\n• *"How many patients do I have?"*\n• *"Which patients need my review?"*\n• *"Show my recent sessions"*\n• *"Tell me about [Patient Name]"*\n• *"Who hasn't practiced recently?"*`
+    });
+
   } catch (err: any) {
-    console.error("Assistant error:", err);
+    console.error("Clinical Assistant error:", err);
     res.status(500).json({ error: "Assistant is temporarily unavailable." });
   }
 });
