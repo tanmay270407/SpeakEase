@@ -4,6 +4,7 @@ import { CheckCircle, ArrowRight, Clock, Activity, AlertCircle, MessageSquare, R
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../../components/ui/Card";
 import { AudioPlayer } from "../../components/AudioPlayer";
 import { PracticeLevelMeter } from "../../components/PracticeLevelMeter";
+import { RecommendedPracticeCard } from "../../components/RecommendedPracticeCard";
 import { Button } from "../../components/ui/Button";
 import { RateSLPModal } from "../../components/slp/RateSLPModal";
 import { reviewService } from "../../services/reviewService";
@@ -26,6 +27,7 @@ export function ExerciseResultPage() {
   const [audioError, setAudioError] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<any>(null);
   const [observation, setObservation] = useState<any>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<any>(null);
   const [clinicianNote, setClinicianNote] = useState<any>(null);
   const [activeSLP, setActiveSLP] = useState<any | null>(null);
   const [sessionReview, setSessionReview] = useState<any | null>(null);
@@ -80,7 +82,13 @@ export function ExerciseResultPage() {
       setSession(sessionRes.data);
       
       if (metricsRes.data) setMetrics(metricsRes.data.metrics || metricsRes.data);
-      if (obsRes.data) setObservation(obsRes.data.observation_text || obsRes.data.observation);
+      if (obsRes.data) {
+        setObservation(obsRes.data.observation_text || obsRes.data.observation);
+        setAiAnalysis(obsRes.data.ai_analysis || (obsRes.data.practice_focus ? obsRes.data : null) || sessionRes.data?.ai_analysis || null);
+      } else {
+        setObservation(null);
+        setAiAnalysis(sessionRes.data?.ai_analysis || null);
+      }
       if (noteRes.data) setClinicianNote(noteRes.data);
 
       if (profile?.id) {
@@ -392,6 +400,18 @@ export function ExerciseResultPage() {
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {/* Recommended Next Practice Section */}
+      {hasAnalysisCompleted && (
+        <RecommendedPracticeCard
+          practiceFocus={aiAnalysis?.practiceFocus || aiAnalysis?.practice_focus || session?.practice_focus || "Smooth Pacing"}
+          recommendedExercise={aiAnalysis?.recommendedExercise || aiAnalysis?.recommended_exercise || session?.recommended_exercise || "Easy Onset & Gentle Voicing"}
+          suggestedDurationMinutes={aiAnalysis?.recommendedDuration || aiAnalysis?.recommended_duration || 3}
+          explanation={aiAnalysis?.recommendationReason || aiAnalysis?.recommendation_reason || "Your recent practice showed some pauses. This exercise can help you continue practicing controlled and comfortable speech flow."}
+          patientFeedback={aiAnalysis?.patientFeedback || aiAnalysis?.patient_feedback || "Good effort. Try maintaining a comfortable and steady pace during your next practice."}
+          observations={aiAnalysis?.observations}
+        />
       )}
 
       {/* Clinician Feedback */}

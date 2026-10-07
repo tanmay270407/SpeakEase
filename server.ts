@@ -14,6 +14,8 @@ import { corsairClient } from "./corsair";
 
 dotenv.config({ override: true });
 
+import { runSpeechAnalysisPipeline } from "./src/services/ai/speechAnalysisPipeline.ts";
+
 const { Pool } = pg;
 const POOLER_DB_URL = "postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
 const rawDbUrl = process.env.DATABASE_URL;
@@ -22,7 +24,10 @@ const dbUrl = isPlaceholder ? POOLER_DB_URL : rawDbUrl;
 
 let pool: pg.Pool | null = null;
 try {
-  pool = new Pool({ connectionString: dbUrl });
+  pool = new Pool({
+    connectionString: dbUrl,
+    ssl: { rejectUnauthorized: false }
+  });
   pool.query(`
     CREATE TABLE IF NOT EXISTS session_audio (
       session_id UUID PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
@@ -52,7 +57,36 @@ try {
           NULL;
         END;
       END IF;
+
+      -- Ensure Multi-AI pipeline schema columns exist
+      BEGIN
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS practice_focus TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS recommended_exercise TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS recommended_duration INT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS patient_feedback TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS slp_summary TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS recommendation_reason TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS ai_model TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS processing_model TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS transcription_provider TEXT;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS ai_confidence NUMERIC;
+        ALTER TABLE ai_observations ADD COLUMN IF NOT EXISTS transcript TEXT;
+      EXCEPTION WHEN others THEN
+        NULL;
+      END;
+
+      BEGIN
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS practice_focus TEXT;
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS recommended_exercise TEXT;
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS recommended_duration INT;
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
+      EXCEPTION WHEN others THEN
+        NULL;
+      END;
     END $$;
+
+    DROP FUNCTION IF EXISTS disconnect_patient_slp(UUID, UUID);
 
     CREATE OR REPLACE FUNCTION disconnect_patient_slp(p_patient_id UUID, p_slp_id UUID)
     RETURNS JSONB
@@ -857,534 +891,98 @@ app.get("/api/practice/content", async (req, res) => {
   }
 });
 
-// Robust Speech Analysis Pipeline with Resilient Model Cascade & Audio Storage
-const SPEECH_AI_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-2.5-flash',
-  'gemini-3.5-transcribe',
-  'gemini-3.1-flash-lite'
-];
+// Multi-AI Speech Analysis Pipeline Orchestration
+// GNANI.AI (Voice-to-Text) -> GROQ (Fast Processing) -> GEMINI (Deep Analysis & Recommendations) -> SUPABASE (Persistence)
 
-function normalizeCount(val: any): number {
-  if (val === null || val === undefined) return 0;
-  if (Array.isArray(val)) return val.length;
-  if (typeof val === 'number') return isNaN(val) ? 0 : Math.max(0, Math.round(val));
-  if (typeof val === 'string') {
-    const parsed = parseFloat(val);
-    return isNaN(parsed) ? 0 : Math.max(0, Math.round(parsed));
-  }
-  return 0;
-}
-
-function calculatePracticeLevelBackend(metrics?: {
-  repetitions?: number | null;
-  pauses?: number | null;
-  prolongations?: number | null;
-  speech_rate?: number | string | null;
-} | null): { level: string; score: number; description: string } {
-  if (!metrics) {
-    return { level: 'Developing', score: 2, description: 'Based on this practice session.' };
-  }
-  const rep = Number(metrics.repetitions) || 0;
-  const pause = Number(metrics.pauses) || 0;
-  const prol = Number(metrics.prolongations) || 0;
-  const rate = Number(metrics.speech_rate) || 0;
-
-  let score = 4;
-  if (rep >= 4 || prol >= 3) {
-    score -= 2;
-  } else if (rep >= 2 || prol >= 1) {
-    score -= 1;
-  }
-  if (pause >= 6) {
-    score -= 1;
-  }
-  if (rate > 0 && (rate < 80 || rate > 175)) {
-    score -= 1;
-  }
-  score = Math.max(1, Math.min(4, score));
-
-  switch (score) {
-    case 4:
-      return { level: 'Strong Progress', score: 4, description: 'Steady pacing and smooth speech flow observed.' };
-    case 3:
-      return { level: 'Good Progress', score: 3, description: 'Good speech control with minor hesitations observed.' };
-    case 2:
-      return { level: 'Developing', score: 2, description: 'Consistent practice will help build pacing and reduce pauses.' };
-    case 1:
-    default:
-      return { level: 'Needs Practice', score: 1, description: 'Focus on relaxed breathing and taking your time between sentences.' };
-  }
-}
-
-async function executeSpeechProcessingWithFallback(mimeType: string, base64Audio: string, sttPrompt: string) {
-  if (!ai) throw new Error("GEMINI_API_KEY is not configured.");
-  
-  let lastError: any = null;
-  for (const model of SPEECH_AI_MODELS) {
-    try {
-      console.log(`[speech-analysis] Attempting acoustic extraction with model: ${model}`);
-      const config: any = {};
-      if (!model.includes("transcribe")) {
-        config.responseMimeType = "application/json";
-      }
-
-      const sttResponse = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: sttPrompt },
-              { inlineData: { mimeType, data: base64Audio } }
-            ]
-          }
-        ],
-        config
-      });
-
-      const sttResultText = sttResponse.text;
-      if (sttResultText && sttResultText.trim().length > 0) {
-        console.log(`[speech-analysis] Successfully transcribed & analyzed with model: ${model}`);
-        const jsonMatch = sttResultText.match(/\{[\s\S]*\}/);
-        return JSON.parse(jsonMatch ? jsonMatch[0] : sttResultText);
-      }
-    } catch (err: any) {
-      console.warn(`[speech-analysis] Model ${model} notice:`, err.message || err);
-      lastError = err;
-    }
-  }
-  throw new Error(`TRANSCRIPTION_FAILED: All Gemini models failed or rate-limited. Last error: ${lastError?.message || 'Unknown'}`);
-}
-
-async function runSpeechAnalysisPipeline({
-  sessionId,
-  user,
-  audioBuffer,
-  mimeType,
-  sessionInfo,
-  supabase,
-  isRetry = false
-}: {
-  sessionId: string;
-  user: any;
-  audioBuffer: Buffer;
-  mimeType: string;
-  sessionInfo: any;
-  supabase: any;
-  isRetry?: boolean;
-}) {
-  // STAGE 1: AUDIO_VALIDATION & STORAGE
-  console.log(`[AUDIO_RETRIEVAL] Inspecting audio for session ${sessionId} (${audioBuffer?.length || 0} bytes, ${mimeType})`);
-  if (!audioBuffer || audioBuffer.length === 0) {
-    console.error(`[AUDIO_RETRIEVAL_FAILED] Audio buffer is empty or missing for session ${sessionId}`);
-    throw new Error("AUDIO_RETRIEVAL_FAILED: Audio buffer is empty or missing.");
-  }
-
-  // Update session to processing status
+app.post("/api/speech/analyze", async (req, res) => {
+  let currentSessionId: string | null = null;
+  const supabase = getSupabaseClient(req);
   try {
-    await supabase.from("sessions").update({ analysis_status: "processing" }).eq("id", sessionId);
-    if (pool) {
-      await pool.query("UPDATE sessions SET analysis_status = 'processing' WHERE id = $1", [sessionId]);
+    if (!supabase) return res.status(401).json({ error: "Unauthorized" });
+
+    const { data: { user }, error: authErr } = await supabase.auth.getUser(req.headers.authorization?.replace("Bearer ", ""));
+    if (authErr || !user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { sessionId, audioUrl, userId } = req.body || {};
+    if (!sessionId) {
+      return res.status(400).json({ error: "Missing sessionId" });
     }
-  } catch (statusErr: any) {
-    console.warn("Could not set processing status:", statusErr.message);
-  }
+    currentSessionId = sessionId;
 
-  if (pool && !isRetry) {
-    try {
-      await pool.query(
-        `INSERT INTO session_audio (session_id, audio_data, content_type) 
-         VALUES ($1, $2, $3) 
-         ON CONFLICT (session_id) DO UPDATE SET audio_data = EXCLUDED.audio_data, content_type = EXCLUDED.content_type`,
-        [sessionId, audioBuffer, mimeType || "audio/webm"]
-      );
+    const { data: sessionInfo, error: sessionErr } = await supabase
+      .from("sessions")
+      .select("id, user_id, duration, exercise_id")
+      .eq("id", sessionId)
+      .single();
 
-      // Verify non-zero size
-      const verifyRes = await pool.query(
-        "SELECT octet_length(audio_data) as len FROM session_audio WHERE session_id = $1",
+    if (sessionErr || !sessionInfo) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    if (sessionInfo.user_id !== user.id && (!userId || user.id !== userId)) {
+      return res.status(403).json({ error: "Forbidden: Not session owner" });
+    }
+
+    let audioBuffer: Buffer | null = null;
+    let mimeType = "audio/webm";
+
+    if (pool) {
+      const audioRow = await pool.query(
+        "SELECT audio_data, content_type FROM session_audio WHERE session_id = $1",
         [sessionId]
       );
-      if (!verifyRes.rows.length || !verifyRes.rows[0].len || Number(verifyRes.rows[0].len) === 0) {
-        throw new Error("AUDIO_STORAGE_FAILED: Verification of saved audio failed in database");
+      if (audioRow.rows.length > 0 && audioRow.rows[0].audio_data) {
+        audioBuffer = audioRow.rows[0].audio_data;
+        mimeType = audioRow.rows[0].content_type || "audio/webm";
       }
-      console.log(`[AUDIO_SAVED] Audio verified in database for session ${sessionId} (${verifyRes.rows[0].len} bytes)`);
+    }
 
-      // Sync to Supabase storage bucket
+    if (!audioBuffer && audioUrl) {
       try {
-        await supabase.storage.from("session_audio").upload(
-          `${user.id}/${sessionId}.webm`,
-          audioBuffer,
-          { contentType: mimeType || "audio/webm", upsert: true }
-        );
-      } catch (storageErr: any) {
-        console.warn("Supabase storage sync notice:", storageErr.message);
-      }
-    } catch (audioErr: any) {
-      console.error("[AUDIO_STORAGE_FAILED]:", audioErr.message);
-      throw audioErr;
-    }
-  }
-
-  // Authoritative duration check
-  let authoritativeDuration = sessionInfo.duration || 0;
-  try {
-    const probeResult = spawnSync("ffprobe", [
-      "-v", "error",
-      "-show_entries", "format=duration",
-      "-of", "default=noprint_wrappers=1:nokey=1",
-      "-"
-    ], { input: audioBuffer, timeout: 5000 });
-    const out = probeResult.stdout?.toString().trim();
-    const durSec = parseFloat(out);
-    if (!isNaN(durSec) && durSec > 0) {
-      authoritativeDuration = durSec < 1 ? 1 : Math.round(durSec);
-    }
-  } catch (ffErr: any) {
-    console.warn("ffprobe duration inspection notice:", ffErr.message);
-  }
-
-  // STAGE 2: TRANSCRIPTION & ACOUSTIC FEATURE EXTRACTION
-  console.log(`[TRANSCRIPTION_START] Starting speech acoustic analysis for session ${sessionId}`);
-  const base64Audio = audioBuffer.toString("base64");
-  const effectiveMimeType = mimeType ? mimeType.split(';')[0].trim() : "audio/webm";
-
-  const sttPrompt = `You are an acoustic speech-to-text processor for speech therapy practice analysis.
-Analyze the speech in this audio recording and extract:
-1. Verbatim transcript of the spoken words (or empty string if tone/silence).
-2. Approximate duration in seconds.
-3. Total word count.
-4. Calculated speech rate in words per minute (WPM).
-5. Preliminary acoustic pause count (distinct hesitations or gaps).
-6. Preliminary sound, syllable, or word repetition count.
-7. Preliminary sound prolongation count.
-
-Return valid JSON with this EXACT structure:
-{
-  "transcript": "<transcribed text or empty if silence>",
-  "durationSeconds": <number>,
-  "wordCount": <number>,
-  "speechRate": <number>,
-  "repetitions": <number>,
-  "pauses": <number>,
-  "prolongations": <number>
-}`;
-
-  let processedAudio: {
-    transcript: string;
-    durationSeconds: number;
-    wordCount: number;
-    speechRate: number;
-    repetitions: number;
-    pauses: number;
-    prolongations: number;
-  };
-
-  try {
-    processedAudio = await executeSpeechProcessingWithFallback(effectiveMimeType, base64Audio, sttPrompt);
-    console.log(`[TRANSCRIPTION_SUCCESS] Extracted speech features for session ${sessionId}: transcript length ${processedAudio.transcript?.length || 0}, WPM ${processedAudio.speechRate}`);
-  } catch (sttErr: any) {
-    console.error("[TRANSCRIPTION_FAILED]:", sttErr.message);
-    processedAudio = {
-      transcript: "",
-      durationSeconds: authoritativeDuration || 5,
-      wordCount: 0,
-      speechRate: 0,
-      repetitions: 0,
-      pauses: 0,
-      prolongations: 0
-    };
-  }
-
-  if (processedAudio.durationSeconds && processedAudio.durationSeconds > 0 && authoritativeDuration <= 0) {
-    authoritativeDuration = Math.round(processedAudio.durationSeconds);
-  }
-  if (authoritativeDuration <= 0) authoritativeDuration = 1;
-
-  if (authoritativeDuration !== sessionInfo.duration) {
-    await supabase.from("sessions").update({ duration: authoritativeDuration }).eq("id", sessionId);
-    if (pool) {
-      await pool.query("UPDATE sessions SET duration = $1 WHERE id = $2", [authoritativeDuration, sessionId]);
-    }
-    sessionInfo.duration = authoritativeDuration;
-  }
-
-  // STAGE 3: METRICS PROCESSING & PRIOR SESSION CONTEXT
-  let priorContext = "This is the patient's baseline practice session (no prior recorded session).";
-  try {
-    const { data: priorSessions } = await supabase
-      .from("sessions")
-      .select("id, created_at, duration")
-      .eq("user_id", user.id)
-      .neq("id", sessionId)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (priorSessions && priorSessions.length > 0) {
-      const { data: pMetrics } = await supabase
-        .from("speech_metrics")
-        .select("repetitions, pauses, prolongations, speech_rate, created_at")
-        .eq("session_id", priorSessions[0].id)
-        .maybeSingle();
-
-      if (pMetrics) {
-        priorContext = `Prior session on ${new Date(pMetrics.created_at).toLocaleDateString()}: Speech rate ${pMetrics.speech_rate || 0} wpm, repetitions ${pMetrics.repetitions ?? 0}, pauses ${pMetrics.pauses ?? 0}, prolongations ${pMetrics.prolongations ?? 0}.`;
+        const audioFetch = await fetch(audioUrl);
+        if (audioFetch.ok) {
+          const ab = await audioFetch.arrayBuffer();
+          audioBuffer = Buffer.from(ab);
+          mimeType = audioFetch.headers.get("content-type") || "audio/webm";
+        }
+      } catch (fErr: any) {
+        console.warn("Could not fetch audio from audioUrl:", fErr.message);
       }
     }
-  } catch (priorErr: any) {
-    console.warn("Could not load prior session context:", priorErr.message);
+
+    if (!audioBuffer || audioBuffer.length === 0) {
+      return res.status(400).json({ error: "Audio recording could not be found for session." });
+    }
+
+    const result = await runSpeechAnalysisPipeline({
+      sessionId,
+      user,
+      audioBuffer,
+      mimeType,
+      sessionInfo,
+      supabase,
+      pool,
+      isRetry: false,
+    });
+
+    return res.json(result);
+  } catch (err: any) {
+    console.error("[api/speech/analyze] Pipeline execution error:", err);
+    if (currentSessionId) {
+      try {
+        if (pool) {
+          await pool.query("UPDATE sessions SET analysis_status = 'failed' WHERE id = $1", [currentSessionId]);
+        } else if (supabase) {
+          await supabase.from("sessions").update({ analysis_status: "failed" }).eq("id", currentSessionId);
+        }
+      } catch (_) {}
+    }
+    return res.status(503).json({
+      error: "Speech analysis is temporarily unavailable.",
+      details: err.message,
+    });
   }
-
-  const finalMetrics = {
-    repetitions: normalizeCount(processedAudio.repetitions),
-    pauses: normalizeCount(processedAudio.pauses),
-    prolongations: normalizeCount(processedAudio.prolongations),
-    speech_rate: normalizeCount(processedAudio.speechRate || (processedAudio as any).speech_rate)
-  };
-
-  // STAGE 4: CORSAIR AI OBSERVATION GENERATION
-  console.log(`[CORSAIR_ANALYSIS] Generating clinical observation for session ${sessionId}`);
-  const corsairAnalysisPrompt = `You are a clinical speech observation assistant for Speech-Language Pathologists reviewing practice sessions in SpeakEase.
-Analyze the following speech session transcript and acoustic parameters:
-- Spoken Transcript: "${processedAudio.transcript || 'Speech practice recorded.'}"
-- Audio Duration: ${authoritativeDuration} seconds
-- Word Count: ${processedAudio.wordCount || 0}
-- Calculated Speech Rate: ${finalMetrics.speech_rate} words per minute
-- Preliminary detected repetitions: ${finalMetrics.repetitions}
-- Preliminary detected pauses: ${finalMetrics.pauses}
-- Preliminary detected prolongations: ${finalMetrics.prolongations}
-- Historical Context: ${priorContext}
-
-Task:
-Provide cautious, objective, non-diagnostic observations for clinician review.
-Cover:
-1. Possible repetitions (sound, syllable, or word).
-2. Noticeable pauses or hesitations.
-3. Possible sound prolongations.
-4. Speech rate and pacing.
-5. Comparison with previous session when real previous data exists (state clearly if baseline/initial session).
-
-CRITICAL CLINICAL SAFETY RULES:
-- You must NEVER diagnose stuttering, speech disorder, or any medical condition.
-- You must NEVER claim medical severity (do NOT use terms like "severe stutter", "pathological", "speech disorder").
-- You must NEVER prescribe therapy, exercises, or clinical interventions.
-- Only provide objective observations that assist the SLP in their evaluation.
-- Allowed phrasing: "Possible repetition observed...", "A pause was noted...", "Speech rate was steady...", "In comparison to prior session..."
-
-Return a JSON object with this EXACT structure:
-{
-  "repetitions": <number>,
-  "pauses": <number>,
-  "prolongations": <number>,
-  "speech_rate": <number>,
-  "observation": "<cautious, non-diagnostic observation narrative complying with all safety rules>"
-}`;
-
-  let corsairObservationText = "";
-  for (const model of ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite']) {
-    try {
-      if (!ai) break;
-      const obsRes = await ai.models.generateContent({
-        model,
-        contents: corsairAnalysisPrompt,
-        config: { responseMimeType: "application/json" }
-      });
-      if (obsRes.text) {
-        const jsonMatch = obsRes.text.match(/\{[\s\S]*\}/);
-        const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : obsRes.text);
-        if (parsed.observation) corsairObservationText = parsed.observation;
-        if (typeof parsed.repetitions === 'number') finalMetrics.repetitions = parsed.repetitions;
-        if (typeof parsed.pauses === 'number') finalMetrics.pauses = parsed.pauses;
-        if (typeof parsed.prolongations === 'number') finalMetrics.prolongations = parsed.prolongations;
-        if (typeof parsed.speech_rate === 'number') finalMetrics.speech_rate = parsed.speech_rate;
-        break;
-      }
-    } catch (obsErr: any) {
-      console.log(`[observation-generation] Model ${model} fallback engaged:`, obsErr?.status || "Rate-limited/Unavailable");
-    }
-  }
-
-  // Safe acoustic observation fallback if narrative is empty
-  if (!corsairObservationText) {
-    const repDesc = finalMetrics.repetitions > 0 ? `${finalMetrics.repetitions} possible repetition(s)` : "no obvious repetitions";
-    const pauseDesc = finalMetrics.pauses > 0 ? `${finalMetrics.pauses} distinct pause(s)` : "steady pacing";
-    const prolDesc = finalMetrics.prolongations > 0 ? `${finalMetrics.prolongations} prolonged sound(s)` : "no sound prolongations";
-    corsairObservationText = `Acoustic analysis recorded a speech rate of approximately ${finalMetrics.speech_rate} WPM with ${pauseDesc}, ${repDesc}, and ${prolDesc}. Observations saved for SLP clinical review.`;
-  }
-
-  // Calculate Practice Level
-  const practiceLevelResult = calculatePracticeLevelBackend(finalMetrics);
-  console.log(`[PRACTICE_LEVEL] Calculated level "${practiceLevelResult.level}" for session ${sessionId}`);
-
-  // STAGE 5: DATABASE SAVE TO THE SAME SESSION
-  console.log(`[DATABASE_SAVE] Persisting metrics and observations for session ${sessionId}`);
-  if (pool) {
-    // Upsert speech_metrics
-    try {
-      await pool.query(
-        `INSERT INTO speech_metrics (session_id, repetitions, pauses, prolongations, speech_rate, created_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
-         ON CONFLICT (session_id) DO UPDATE SET 
-           repetitions = EXCLUDED.repetitions,
-           pauses = EXCLUDED.pauses,
-           prolongations = EXCLUDED.prolongations,
-           speech_rate = EXCLUDED.speech_rate,
-           created_at = NOW()`,
-        [sessionId, finalMetrics.repetitions, finalMetrics.pauses, finalMetrics.prolongations, finalMetrics.speech_rate]
-      );
-    } catch (metricConflictErr: any) {
-      console.warn("speech_metrics upsert fallback:", metricConflictErr.message);
-      await pool.query("DELETE FROM speech_metrics WHERE session_id = $1", [sessionId]);
-      await pool.query(
-        `INSERT INTO speech_metrics (session_id, repetitions, pauses, prolongations, speech_rate, created_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [sessionId, finalMetrics.repetitions, finalMetrics.pauses, finalMetrics.prolongations, finalMetrics.speech_rate]
-      );
-    }
-
-    // Upsert ai_observations
-    try {
-      await pool.query(
-        `INSERT INTO ai_observations (session_id, observation, observation_text, created_at)
-         VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (session_id) DO UPDATE SET 
-           observation = EXCLUDED.observation,
-           observation_text = EXCLUDED.observation_text,
-           created_at = NOW()`,
-        [sessionId, corsairObservationText, corsairObservationText]
-      );
-    } catch (obsConflictErr: any) {
-      console.warn("ai_observations upsert fallback:", obsConflictErr.message);
-      await pool.query("DELETE FROM ai_observations WHERE session_id = $1", [sessionId]);
-      await pool.query(
-        `INSERT INTO ai_observations (session_id, observation, observation_text, created_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [sessionId, corsairObservationText, corsairObservationText]
-      );
-    }
-
-    // Update session
-    await pool.query(
-      `UPDATE sessions 
-       SET review_status = CASE WHEN review_status = 'REVIEWED' THEN review_status ELSE 'READY_FOR_REVIEW' END, 
-           analysis_status = 'completed', 
-           practice_level = $1,
-           analyzed_at = NOW(),
-           duration = COALESCE($2, duration)
-       WHERE id = $3`,
-      [practiceLevelResult.level, authoritativeDuration, sessionId]
-    );
-  } else {
-    // Supabase fallback
-    const { error: smErr } = await supabase.from("speech_metrics").upsert({
-      session_id: sessionId,
-      repetitions: finalMetrics.repetitions,
-      pauses: finalMetrics.pauses,
-      prolongations: finalMetrics.prolongations,
-      speech_rate: finalMetrics.speech_rate
-    }, { onConflict: 'session_id' });
-
-    if (smErr) {
-      await supabase.from("speech_metrics").delete().eq("session_id", sessionId);
-      await supabase.from("speech_metrics").insert({
-        session_id: sessionId,
-        repetitions: finalMetrics.repetitions,
-        pauses: finalMetrics.pauses,
-        prolongations: finalMetrics.prolongations,
-        speech_rate: finalMetrics.speech_rate
-      });
-    }
-
-    const { error: obsErr } = await supabase.from("ai_observations").upsert({
-      session_id: sessionId,
-      observation: corsairObservationText,
-      observation_text: corsairObservationText
-    }, { onConflict: 'session_id' });
-
-    if (obsErr) {
-      await supabase.from("ai_observations").delete().eq("session_id", sessionId);
-      await supabase.from("ai_observations").insert({
-        session_id: sessionId,
-        observation: corsairObservationText,
-        observation_text: corsairObservationText
-      });
-    }
-
-    await supabase.from("sessions").update({
-      review_status: "READY_FOR_REVIEW",
-      analysis_status: "completed",
-      practice_level: practiceLevelResult.level,
-      analyzed_at: new Date().toISOString(),
-      duration: authoritativeDuration
-    }).eq("id", sessionId);
-  }
-
-  // Sync to corsair_entities & audit_logs
-  if (pool) {
-    try {
-      const timestamp = new Date().toISOString();
-      const accountId = "default";
-      const sessionEntityId = `session_${sessionId}`;
-      const sData = {
-        id: sessionId,
-        user_id: user.id,
-        patient_id: user.id,
-        duration: authoritativeDuration,
-        practice_level: practiceLevelResult.level,
-        review_status: 'READY_FOR_REVIEW',
-        analysis_status: 'completed',
-        created_at: timestamp
-      };
-      await pool.query(
-        `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
-        [sessionEntityId, timestamp, timestamp, accountId, sessionId, 'session', '1', JSON.stringify(sData)]
-      );
-
-      const metricEntityId = `metric_${sessionId}`;
-      const metricPayload = {
-        session_id: sessionId,
-        repetitions: finalMetrics.repetitions,
-        pauses: finalMetrics.pauses,
-        prolongations: finalMetrics.prolongations,
-        speech_rate: finalMetrics.speech_rate,
-        practice_level: practiceLevelResult.level,
-        observation: corsairObservationText,
-        created_at: timestamp
-      };
-      await pool.query(
-        `INSERT INTO corsair_entities (id, created_at, updated_at, account_id, entity_id, entity_type, version, data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (id) DO UPDATE SET updated_at = $3, data = $8;`,
-        [metricEntityId, timestamp, timestamp, accountId, sessionId, 'speech_metric', '1', JSON.stringify(metricPayload)]
-      );
-
-      await pool.query(
-        "INSERT INTO audit_logs (event_type, description) VALUES ($1, $2)",
-        ['WORKFLOW_EXECUTION', JSON.stringify({
-          workflow: "Corsair AI Speech Analysis",
-          status: "Success",
-          sessionId,
-          metrics: finalMetrics,
-          practice_level: practiceLevelResult.level
-        })]
-      );
-    } catch (auditErr: any) {
-      console.warn("Audit log notice:", auditErr.message);
-    }
-  }
-
-  console.log(`[DATABASE_SAVE] Analysis pipeline completed successfully for session ${sessionId}`);
-
-  return {
-    success: true,
-    sessionId,
-    metrics: finalMetrics,
-    observation: corsairObservationText,
-    practice_level: practiceLevelResult.level
-  };
-}
+});
 
 app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
   let currentSessionId: string | null = null;
@@ -1452,6 +1050,7 @@ app.post("/api/analyze-speech", upload.single("audio"), async (req, res) => {
       mimeType,
       sessionInfo,
       supabase,
+      pool,
       isRetry: !req.file
     });
 
@@ -1524,6 +1123,7 @@ app.post("/api/sessions/:sessionId/retry-analysis", async (req, res) => {
       mimeType,
       sessionInfo,
       supabase,
+      pool,
       isRetry: true
     });
 

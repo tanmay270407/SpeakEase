@@ -12,7 +12,8 @@ const dbUrl = isPlaceholder ? POOLER_DB_URL : rawDbUrl;
 
 // Initialize Postgres connection
 const pool = new Pool({ 
-  connectionString: dbUrl 
+  connectionString: dbUrl,
+  ssl: { rejectUnauthorized: false }
 });
 
 export const corsairClient = createCorsair({
