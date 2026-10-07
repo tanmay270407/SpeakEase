@@ -2170,7 +2170,7 @@ const isDirectRun = Boolean(
   )
 );
 
-if (!isServerless && (isDirectRun || process.env.NODE_ENV !== "production")) {
+if (!isServerless && isDirectRun) {
   startServer();
 }
 

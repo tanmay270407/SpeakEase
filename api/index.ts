@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
-import app from '../server';
+// @ts-ignore
+import app from '../dist/server.js';
 
 export default function handler(req: Request, res: Response) {
   const matchedPath = (req.headers['x-matched-path'] || req.headers['x-invoke-path'] || req.headers['x-vercel-matched-path']) as string | undefined;
