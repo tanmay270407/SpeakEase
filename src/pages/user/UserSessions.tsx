@@ -120,20 +120,6 @@ export function UserSessions() {
         {/* Navigation Tabs */}
         <div className="flex items-center gap-2 p-1 bg-slate-100 rounded-xl border border-slate-200 shrink-0">
           <button
-            onClick={() => setActiveTab("live")}
-            className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              activeTab === "live"
-                ? "bg-white text-indigo-600 shadow-xs"
-                : "text-slate-600 hover:text-slate-900"
-            }`}
-          >
-            <span className="flex items-center gap-1.5">
-              <Video className="h-3.5 w-3.5" />
-              Live Appointments
-            </span>
-          </button>
-
-          <button
             onClick={() => setActiveTab("recorded")}
             className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               activeTab === "recorded"
@@ -144,6 +130,20 @@ export function UserSessions() {
             <span className="flex items-center gap-1.5">
               <History className="h-3.5 w-3.5" />
               Practice History
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("live")}
+            className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              activeTab === "live"
+                ? "bg-white text-indigo-600 shadow-xs"
+                : "text-slate-600 hover:text-slate-900"
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <Video className="h-3.5 w-3.5" />
+              Live Appointments
             </span>
           </button>
         </div>

@@ -66,9 +66,9 @@ export function SLPSessions() {
   const [topTab, setTopTab] = useState<"live_sessions" | "practice_logs" | "availability">(
     initialTabParam === "availability"
       ? "availability"
-      : initialTabParam === "practice"
-      ? "practice_logs"
-      : "live_sessions"
+      : initialTabParam === "live" || initialTabParam === "live_sessions"
+      ? "live_sessions"
+      : "practice_logs"
   );
 
   const [loading, setLoading] = useState(true);
@@ -467,18 +467,6 @@ export function SLPSessions() {
       {/* Primary Mode Navigation Bar */}
       <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-slate-100 border border-slate-200/80 w-fit">
         <button
-          onClick={() => setTopTab("live_sessions")}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
-            topTab === "live_sessions"
-              ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
-              : "text-slate-600 hover:text-slate-900"
-          }`}
-        >
-          <Video className="w-4 h-4 text-indigo-600" />
-          <span>Live Telehealth Sessions</span>
-        </button>
-
-        <button
           onClick={() => setTopTab("practice_logs")}
           className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
             topTab === "practice_logs"
@@ -488,6 +476,18 @@ export function SLPSessions() {
         >
           <Activity className="w-4 h-4 text-teal-600" />
           <span>Practice Recordings ({totalCount})</span>
+        </button>
+
+        <button
+          onClick={() => setTopTab("live_sessions")}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+            topTab === "live_sessions"
+              ? "bg-white text-indigo-700 shadow-xs border border-slate-200"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <Video className="w-4 h-4 text-indigo-600" />
+          <span>Live Telehealth Sessions</span>
         </button>
 
         <button

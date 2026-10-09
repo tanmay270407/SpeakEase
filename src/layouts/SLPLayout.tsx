@@ -10,7 +10,6 @@ import {
   X,
   Sparkles, 
   LogOut, 
-  Activity, 
   UserPlus, 
   Inbox 
 } from "lucide-react";
@@ -31,7 +30,6 @@ const slpNavItems = [
   { name: "Sessions", to: "/slp/sessions", icon: Calendar },
   { name: "Exercises", to: "/slp/exercises", icon: List },
   { name: "Assistant", to: "/slp/assistant", icon: Sparkles },
-  { name: "Workflows", to: "/slp/workflows", icon: Activity },
   { name: "Settings", to: "/slp/settings", icon: Settings },
 ];
 

@@ -12,9 +12,27 @@ export function SLPAssistant() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const { session } = useAuth();
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let timer: any;
+    if (isLoading) {
+      setLoadingStep(0);
+      timer = setInterval(() => {
+        setLoadingStep((prev) => (prev < 2 ? prev + 1 : prev));
+      }, 1500);
+    }
+    return () => clearInterval(timer);
+  }, [isLoading]);
+
+  const loadingMessages = [
+    "Checking your patient records...",
+    "Retrieving relevant clinical history...",
+    "Analyzing authorized records..."
+  ];
 
   const suggestedQuestions = [
     "Do I have any patient connection requests?",
@@ -35,22 +53,26 @@ export function SLPAssistant() {
     if (!text.trim() || isLoading) return;
 
     const userMessage: Message = { id: Date.now().toString(), role: "user", content: text };
-    setMessages((prev) => [...prev, userMessage]);
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
     setInput("");
     setIsLoading(true);
     setError(null);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
 
     try {
       const response = await fetch("/api/slp/assistant", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${session?.access_token}`,
+          "Authorization": `Bearer ${session?.access_token || ""}`,
         },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({
+          message: text,
+          messages: updatedMessages.map(m => ({ role: m.role, content: m.content }))
+        }),
         signal: controller.signal
       });
       clearTimeout(timeoutId);
@@ -68,8 +90,12 @@ export function SLPAssistant() {
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err: any) {
       clearTimeout(timeoutId);
-      console.error(err);
-      setError(err.name === 'AbortError' ? "Unable to retrieve records right now. Please try again." : "Assistant is temporarily unavailable.");
+      console.error("Clinical assistant query error:", err);
+      setError(
+        err.name === 'AbortError'
+          ? "The request took longer than expected. Please try again."
+          : err.message || "Assistant is temporarily unavailable."
+      );
     } finally {
       setIsLoading(false);
     }
@@ -139,7 +165,7 @@ export function SLPAssistant() {
                 <Loader2 className="w-4 h-4 animate-spin" />
               </div>
               <div className="bg-white border border-slate-200 rounded-md px-4 py-3 text-sm text-slate-500">
-                Checking your patient records...
+                {loadingMessages[loadingStep]}
               </div>
             </div>
           )}

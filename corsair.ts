@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true });
+dotenv.config();
 
 import { createCorsair } from 'corsair';
 import { Pool } from 'pg';
@@ -111,12 +111,14 @@ export const corsairClient = createCorsair({
     }
   ],
   database: pool,
-  kek: process.env.CORSAIR_KEK!,
-  hub: {
-    projectApiKey: process.env.CORSAIR_API_KEY!,
-    signingSecret: process.env.CORSAIR_SIGNING_SECRET!,
-    allowWorkflowExecution: true,
-  },
+  kek: process.env.CORSAIR_KEK || '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+  ...(process.env.CORSAIR_API_KEY?.trim() && process.env.CORSAIR_SIGNING_SECRET?.trim() ? {
+    hub: {
+      projectApiKey: process.env.CORSAIR_API_KEY.trim(),
+      signingSecret: process.env.CORSAIR_SIGNING_SECRET.trim(),
+      allowWorkflowExecution: true,
+    }
+  } : {}),
 });
 
 (corsairClient as any).corsair = corsairClient;
