@@ -46,8 +46,14 @@ export function PracticePage() {
 
   const [sessionId, setSessionId] = useState<string | null>(null);
 
-  // Load patient's connected SLP
+  // Load patient's connected SLP and check if consent was already given in this browser session
   useEffect(() => {
+    const hasConsentedBefore = sessionStorage.getItem("speakease_practice_consent") === "true";
+    if (hasConsentedBefore) {
+      setStep('ready');
+      loadDynamicPracticeContent();
+    }
+
     async function loadSLP() {
       if (profile?.id) {
         try {
@@ -98,6 +104,7 @@ export function PracticePage() {
     setIsSubmittingConsent(true);
     setErrorMsg(null);
     try {
+      sessionStorage.setItem("speakease_practice_consent", "true");
       const { data, error } = await (supabase.from('consents') as any).insert({
         user_id: profile.id,
         consent_type: 'AUDIO_RECORDING_ANALYSIS'
