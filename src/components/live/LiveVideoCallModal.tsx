@@ -51,13 +51,17 @@ export function LiveVideoCallModal({
   const [submittedReview, setSubmittedReview] = useState<boolean>(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
 
+  // Audio autoplay status
+  const [audioAutoplayBlocked, setAudioAutoplayBlocked] = useState<boolean>(false);
+
   // Refs for guarding DB updates
   const hasUpdatedStartRef = useRef(false);
   const hasUpdatedEndRef = useRef(false);
 
-  // Video element references
+  // Video and audio element references
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Initialize WebRTC hook
   const {
@@ -68,6 +72,7 @@ export function LiveVideoCallModal({
     micOn,
     cameraOn,
     screenSharing,
+    isPeerJoined,
     isRemoteCameraOff,
     isRemoteMicMuted,
     mediaError,
@@ -101,19 +106,58 @@ export function LiveVideoCallModal({
     },
   });
 
+  // Unlock remote audio if restricted by browser autoplay policy
+  const handleUnlockAudio = async () => {
+    if (remoteAudioRef.current) {
+      try {
+        await remoteAudioRef.current.play();
+        setAudioAutoplayBlocked(false);
+        console.log("[WebRTC Diagnostic] Remote audio unlocked by user click");
+      } catch (err) {
+        console.warn("[WebRTC Diagnostic] Audio unlock attempt failed:", err);
+      }
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.play().catch(() => {});
+    }
+  };
+
   // Attach local media stream to local video element
   useEffect(() => {
     if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
+      if (localVideoRef.current.srcObject !== localStream) {
+        localVideoRef.current.srcObject = localStream;
+      }
+      localVideoRef.current.play().catch((e) => {
+        console.warn("[WebRTC Diagnostic] Local video preview play notice:", e);
+      });
     }
   }, [localStream]);
 
-  // Attach remote media stream to remote video element
+  // Attach remote media stream to dedicated audio and video elements
   useEffect(() => {
+    if (remoteAudioRef.current && remoteStream) {
+      if (remoteAudioRef.current.srcObject !== remoteStream) {
+        remoteAudioRef.current.srcObject = remoteStream;
+      }
+      remoteAudioRef.current
+        .play()
+        .then(() => {
+          setAudioAutoplayBlocked(false);
+          console.log("[WebRTC Diagnostic] Remote audio playback active");
+        })
+        .catch((e) => {
+          console.warn("[WebRTC Diagnostic] Remote audio playback restricted by browser autoplay policy:", e);
+          setAudioAutoplayBlocked(true);
+        });
+    }
+
     if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
+      if (remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
       remoteVideoRef.current.play().catch((e) => {
-        console.warn("Autoplay notice for remote video:", e);
+        console.warn("[WebRTC Diagnostic] Remote video playback notice:", e);
       });
     }
   }, [remoteStream]);
@@ -450,16 +494,36 @@ export function LiveVideoCallModal({
             )
           ) : (
             <div className="relative w-full h-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 flex items-center justify-center">
-              {/* Primary Remote Video / Waiting Canvas */}
-              {remoteStream && !isRemoteCameraOff ? (
-                <div className="relative w-full h-full flex items-center justify-center bg-black">
-                  <video
-                    ref={remoteVideoRef}
-                    autoPlay
-                    playsInline
-                    className="w-full h-full object-cover"
-                  />
-                  {/* Remote Muted Badge Overlay */}
+              {/* Dedicated Hidden Audio Element for Remote Audio (Guarantees uninterrupted audio even if camera turns off) */}
+              <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+
+              {/* Autoplay Restriction Unlock Banner */}
+              {audioAutoplayBlocked && (
+                <div className="absolute top-4 z-40 px-4 py-2.5 bg-amber-500 text-slate-950 rounded-2xl shadow-2xl flex items-center gap-3 text-xs font-semibold animate-pulse">
+                  <span>Audio playback restricted by browser policy.</span>
+                  <button
+                    onClick={handleUnlockAudio}
+                    className="bg-slate-900 text-white hover:bg-black text-xs font-bold py-1 px-3 rounded-xl cursor-pointer transition-colors"
+                  >
+                    Tap to Enable Audio
+                  </button>
+                </div>
+              )}
+
+              {/* Persistently Mounted Remote Video Element */}
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover transition-opacity duration-200 ${
+                  remoteStream && !isRemoteCameraOff ? "opacity-100" : "opacity-0 hidden"
+                }`}
+              />
+
+              {/* Remote Stream Active Overlays */}
+              {remoteStream && !isRemoteCameraOff && (
+                <>
                   {isRemoteMicMuted && (
                     <div className="absolute top-4 left-4 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-medium text-amber-300 flex items-center gap-1.5 backdrop-blur-md z-10">
                       <MicOff className="w-3.5 h-3.5 text-amber-400" />
@@ -469,9 +533,11 @@ export function LiveVideoCallModal({
                   <div className="absolute bottom-4 left-4 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-semibold text-slate-200 backdrop-blur-md z-10">
                     {otherPersonName} ({userRole === "slp" ? "Patient" : "SLP"})
                   </div>
-                </div>
-              ) : remoteStream && isRemoteCameraOff ? (
-                /* Remote Camera Off Card */
+                </>
+              )}
+
+              {/* Remote Camera Off Display */}
+              {remoteStream && isRemoteCameraOff && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 p-6 text-center space-y-3">
                   <div className="relative">
                     <div className="h-28 w-28 rounded-full bg-gradient-to-tr from-indigo-600 to-teal-500 p-1 shadow-xl">
@@ -488,9 +554,17 @@ export function LiveVideoCallModal({
                     <VideoOff className="w-3.5 h-3.5 text-slate-500" />
                     Participant turned off camera (Audio stream active)
                   </p>
+                  {isRemoteMicMuted && (
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs">
+                      <MicOff className="w-3 h-3" />
+                      <span>Microphone Muted</span>
+                    </div>
+                  )}
                 </div>
-              ) : (
-                /* Waiting State Card */
+              )}
+
+              {/* Waiting For Participant Display */}
+              {!remoteStream && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-900/90 to-indigo-950/40 p-6 text-center space-y-4">
                   <div className="relative">
                     <div className="h-28 w-28 rounded-full bg-slate-800/80 border-2 border-indigo-500/30 flex items-center justify-center text-3xl font-bold text-white shadow-xl">

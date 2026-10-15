@@ -7,6 +7,8 @@ import {
   generateAvailableSlots,
   verifyActivePatientAssignment,
   checkForSessionConflict,
+  createCustomTimeSlot,
+  validateCustomTimeSlot,
   TimeSlot,
   DAY_NAMES
 } from "../../lib/liveSessionUtils";
@@ -23,7 +25,8 @@ import {
   Send,
   Info,
   Search,
-  Stethoscope
+  Stethoscope,
+  Sparkles
 } from "lucide-react";
 
 interface PatientBookSessionModalProps {
@@ -61,6 +64,11 @@ export function PatientBookSessionModal({
   const [existingSessions, setExistingSessions] = useState<LiveSession[]>([]);
   const [availableSlots, setAvailableSlots] = useState<TimeSlot[]>([]);
   const [selectedSlot, setSelectedSlot] = useState<TimeSlot | null>(null);
+
+  // Custom Time Mode state
+  const [timeSelectionMode, setTimeSelectionMode] = useState<"slots" | "custom">("slots");
+  const [customStartTime, setCustomStartTime] = useState<string>("11:40");
+  const [customValidationError, setCustomValidationError] = useState<string | null>(null);
 
   // 1. Fetch active assigned SLP & Availability
   useEffect(() => {
@@ -135,7 +143,7 @@ export function PatientBookSessionModal({
   useEffect(() => {
     if (!selectedDate || availabilities.length === 0) {
       setAvailableSlots([]);
-      setSelectedSlot(null);
+      if (timeSelectionMode === "slots") setSelectedSlot(null);
       return;
     }
 
@@ -147,8 +155,41 @@ export function PatientBookSessionModal({
     );
 
     setAvailableSlots(slots);
-    setSelectedSlot(null);
-  }, [selectedDate, duration, availabilities, existingSessions]);
+    if (timeSelectionMode === "slots") setSelectedSlot(null);
+  }, [selectedDate, duration, availabilities, existingSessions, timeSelectionMode]);
+
+  // 4. Handle Custom Time recalculation & validation
+  useEffect(() => {
+    if (timeSelectionMode !== "custom") return;
+
+    if (!customStartTime) {
+      setCustomValidationError("Please enter a valid start time.");
+      setSelectedSlot(null);
+      return;
+    }
+
+    const customSlot = createCustomTimeSlot(selectedDate, customStartTime, duration);
+    if (!customSlot) {
+      setCustomValidationError("Invalid start time format.");
+      setSelectedSlot(null);
+      return;
+    }
+
+    const validation = validateCustomTimeSlot(
+      customSlot,
+      selectedDate,
+      availabilities,
+      existingSessions
+    );
+
+    if (validation.isValid) {
+      setCustomValidationError(null);
+      setSelectedSlot(customSlot);
+    } else {
+      setCustomValidationError(validation.error);
+      setSelectedSlot(null);
+    }
+  }, [timeSelectionMode, customStartTime, selectedDate, duration, availabilities, existingSessions]);
 
   const handleSendBookingRequest = async () => {
     if (!profile?.id) return;
@@ -156,8 +197,14 @@ export function PatientBookSessionModal({
       setError("No active Speech-Language Pathologist connected.");
       return;
     }
+
+    if (timeSelectionMode === "custom" && customValidationError) {
+      setError(customValidationError);
+      return;
+    }
+
     if (!selectedSlot) {
-      setError("Please select an available time slot.");
+      setError("Please select an available time slot or valid custom time.");
       return;
     }
 
@@ -175,7 +222,7 @@ export function PatientBookSessionModal({
         throw new Error("Cannot book session: You do not have an active care relationship with this SLP.");
       }
 
-      // Step 2: Check for session conflict
+      // Step 2: Authoritative Backend schedule & conflict check immediately before saving
       const conflictMsg = await checkForSessionConflict(
         slpInfo.id,
         profile.id,
@@ -372,46 +419,146 @@ export function PatientBookSessionModal({
                 </div>
               </div>
 
-              {/* Available Time Slots */}
-              <div className="space-y-2">
+              {/* Time Selection Mode Toggle & Options */}
+              <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    SLP Available Time Slot
+                    Time Selection
                   </label>
-                  <span className="text-xs text-slate-400 font-medium">
-                    {availableSlots.length} slot{availableSlots.length === 1 ? "" : "s"} open
-                  </span>
+                  <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTimeSelectionMode("slots");
+                        setSelectedSlot(null);
+                      }}
+                      className={`px-3 py-1 font-semibold rounded-lg transition-all cursor-pointer ${
+                        timeSelectionMode === "slots"
+                          ? "bg-white text-indigo-700 shadow-2xs"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Available Slots ({availableSlots.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTimeSelectionMode("custom");
+                        if (!customStartTime) setCustomStartTime("11:40");
+                      }}
+                      className={`px-3 py-1 font-semibold rounded-lg transition-all cursor-pointer ${
+                        timeSelectionMode === "custom"
+                          ? "bg-white text-indigo-700 shadow-2xs"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Choose Custom Time
+                    </button>
+                  </div>
                 </div>
 
-                {availabilities.length === 0 ? (
-                  <div className="p-4 rounded-xl bg-slate-50 border border-dashed border-slate-300 text-center text-xs text-slate-500 space-y-1">
-                    <p className="font-medium text-slate-700">No working hours listed</p>
-                    <p>Your clinician has not set active availability for this schedule yet.</p>
-                  </div>
-                ) : availableSlots.length === 0 ? (
-                  <div className="p-4 rounded-xl bg-amber-50/50 border border-amber-200/60 text-center text-xs text-amber-800 space-y-1">
-                    <p className="font-semibold text-amber-900">No available slots on {selectedDayName}</p>
-                    <p>All working hours on this date are either occupied or outside clinician schedule.</p>
-                  </div>
+                {timeSelectionMode === "slots" ? (
+                  /* Standard Available Slots Grid */
+                  availabilities.length === 0 ? (
+                    <div className="p-4 rounded-xl bg-slate-50 border border-dashed border-slate-300 text-center text-xs text-slate-500 space-y-1">
+                      <p className="font-medium text-slate-700">No working hours listed</p>
+                      <p>Your clinician has not set active availability for this schedule yet.</p>
+                    </div>
+                  ) : availableSlots.length === 0 ? (
+                    <div className="p-4 rounded-xl bg-amber-50/50 border border-amber-200/60 text-center text-xs text-amber-800 space-y-1">
+                      <p className="font-semibold text-amber-900">No available slots on {selectedDayName}</p>
+                      <p>All working hours on this date are either occupied or outside clinician schedule. Try "Choose Custom Time" or pick another date.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 border rounded-xl border-slate-200 bg-slate-50/50">
+                      {availableSlots.map((slot) => {
+                        const isSelected = selectedSlot?.startISO === slot.startISO;
+                        return (
+                          <button
+                            key={slot.startISO}
+                            type="button"
+                            onClick={() => setSelectedSlot(slot)}
+                            className={`p-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer text-center ${
+                              isSelected
+                                ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
+                                : "bg-white text-slate-800 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/30"
+                            }`}
+                          >
+                            {slot.startTimeStr} – {slot.endTimeStr}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )
                 ) : (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-1 border rounded-xl border-slate-200 bg-slate-50/50">
-                    {availableSlots.map((slot) => {
-                      const isSelected = selectedSlot?.startISO === slot.startISO;
-                      return (
+                  /* Custom Start Time Selection UI */
+                  <div className="p-4 rounded-xl border border-indigo-100 bg-indigo-50/30 space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-700 flex items-center gap-1.5">
+                          <Clock className="h-3.5 w-3.5 text-indigo-600" />
+                          Exact Start Time
+                        </label>
+                        <input
+                          type="time"
+                          value={customStartTime}
+                          onChange={(e) => setCustomStartTime(e.target.value)}
+                          className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm font-semibold text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-hidden"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-500">
+                          Calculated End Time
+                        </label>
+                        <div className="px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 text-sm font-semibold text-slate-800 flex items-center justify-between">
+                          <span>{selectedSlot ? selectedSlot.endTimeStr : "--:--"}</span>
+                          <span className="text-xs font-normal text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
+                            +{duration} min
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Preset buttons for convenience */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[11px] font-medium text-slate-500 mr-1">Quick Picks:</span>
+                      {["09:15", "10:40", "11:40", "13:20", "14:45", "16:15"].map((timeVal) => (
                         <button
-                          key={slot.startISO}
+                          key={timeVal}
                           type="button"
-                          onClick={() => setSelectedSlot(slot)}
-                          className={`p-2.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer text-center ${
-                            isSelected
-                              ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
-                              : "bg-white text-slate-800 border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/30"
+                          onClick={() => setCustomStartTime(timeVal)}
+                          className={`px-2 py-0.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                            customStartTime === timeVal
+                              ? "bg-indigo-600 text-white font-semibold"
+                              : "bg-white text-slate-700 border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50"
                           }`}
                         >
-                          {slot.startTimeStr} – {slot.endTimeStr}
+                          {createCustomTimeSlot(selectedDate, timeVal, 30)?.startTimeStr || timeVal}
                         </button>
-                      );
-                    })}
+                      ))}
+                    </div>
+
+                    {/* Custom Time Validation Status */}
+                    {customValidationError ? (
+                      <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-start gap-2">
+                        <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold">Custom Time Unavailable</p>
+                          <p className="mt-0.5">{customValidationError}</p>
+                        </div>
+                      </div>
+                    ) : selectedSlot ? (
+                      <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between">
+                        <div className="flex items-center gap-2 font-medium">
+                          <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                          <span>Custom slot available: <strong>{selectedSlot.startTimeStr} – {selectedSlot.endTimeStr}</strong></span>
+                        </div>
+                        <span className="text-[11px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">
+                          Validated
+                        </span>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </div>
