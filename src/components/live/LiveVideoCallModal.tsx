@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "../../lib/supabase";
 import { LiveSession } from "../../types/supabase";
 import { Button } from "../ui/Button";
@@ -37,7 +37,8 @@ export function LiveVideoCallModal({
   onClose,
   userRole,
 }: LiveVideoCallModalProps) {
-  const { profile } = useAuth();
+  const { user, profile } = useAuth();
+  const currentUserId = profile?.id || user?.id;
 
   // Call timing state
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -63,6 +64,23 @@ export function LiveVideoCallModal({
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Memoized onConnected callback to prevent re-initialization cycles
+  const handleConnected = useCallback(async () => {
+    if (!session.actual_started_at && !hasUpdatedStartRef.current) {
+      hasUpdatedStartRef.current = true;
+      try {
+        await (supabase.from("live_sessions") as any)
+          .update({
+            actual_started_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", session.id);
+      } catch (e) {
+        console.warn("Error updating session start time:", e);
+      }
+    }
+  }, [session.actual_started_at, session.id]);
+
   // Initialize WebRTC hook
   const {
     localStream,
@@ -77,7 +95,9 @@ export function LiveVideoCallModal({
     isRemoteMicMuted,
     mediaError,
     authError,
+    signalingNotice,
     audioLevel,
+    correlationId,
     toggleMic,
     toggleCamera,
     toggleScreenShare,
@@ -85,25 +105,10 @@ export function LiveVideoCallModal({
     hangUp,
   } = useWebRTC({
     sessionId: session.id,
-    userId: profile?.id,
+    userId: currentUserId,
     userRole,
     isOpen: isOpen && !callEnded,
-    onConnected: async () => {
-      // Mark session started in DB if not already logged and not already sent
-      if (!session.actual_started_at && !hasUpdatedStartRef.current) {
-        hasUpdatedStartRef.current = true;
-        try {
-          await (supabase.from("live_sessions") as any)
-            .update({
-              actual_started_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", session.id);
-        } catch (e) {
-          console.warn("Error updating session start time:", e);
-        }
-      }
-    },
+    onConnected: handleConnected,
   });
 
   // Unlock remote audio if restricted by browser autoplay policy
@@ -112,9 +117,9 @@ export function LiveVideoCallModal({
       try {
         await remoteAudioRef.current.play();
         setAudioAutoplayBlocked(false);
-        console.log("[WebRTC Diagnostic] Remote audio unlocked by user click");
+        console.log(`[WebRTC:${correlationId}] Remote audio unlocked by user click`);
       } catch (err) {
-        console.warn("[WebRTC Diagnostic] Audio unlock attempt failed:", err);
+        console.warn(`[WebRTC:${correlationId}] Audio unlock attempt failed:`, err);
       }
     }
     if (remoteVideoRef.current) {
@@ -124,43 +129,46 @@ export function LiveVideoCallModal({
 
   // Attach local media stream to local video element
   useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      if (localVideoRef.current.srcObject !== localStream) {
-        localVideoRef.current.srcObject = localStream;
+    const videoEl = localVideoRef.current;
+    if (videoEl && localStream) {
+      if (videoEl.srcObject !== localStream) {
+        videoEl.srcObject = localStream;
       }
-      localVideoRef.current.play().catch((e) => {
-        console.warn("[WebRTC Diagnostic] Local video preview play notice:", e);
+      videoEl.play().catch((e) => {
+        console.warn(`[WebRTC:${correlationId}] Local video preview play notice:`, e);
       });
     }
-  }, [localStream]);
+  }, [localStream, cameraOn, correlationId]);
 
   // Attach remote media stream to dedicated audio and video elements
   useEffect(() => {
-    if (remoteAudioRef.current && remoteStream) {
-      if (remoteAudioRef.current.srcObject !== remoteStream) {
-        remoteAudioRef.current.srcObject = remoteStream;
+    const audioEl = remoteAudioRef.current;
+    if (audioEl && remoteStream) {
+      if (audioEl.srcObject !== remoteStream) {
+        audioEl.srcObject = remoteStream;
       }
-      remoteAudioRef.current
+      audioEl
         .play()
         .then(() => {
           setAudioAutoplayBlocked(false);
-          console.log("[WebRTC Diagnostic] Remote audio playback active");
+          console.log(`[WebRTC:${correlationId}] Remote audio playback active`);
         })
         .catch((e) => {
-          console.warn("[WebRTC Diagnostic] Remote audio playback restricted by browser autoplay policy:", e);
+          console.warn(`[WebRTC:${correlationId}] Remote audio autoplay notice:`, e);
           setAudioAutoplayBlocked(true);
         });
     }
 
-    if (remoteVideoRef.current && remoteStream) {
-      if (remoteVideoRef.current.srcObject !== remoteStream) {
-        remoteVideoRef.current.srcObject = remoteStream;
+    const videoEl = remoteVideoRef.current;
+    if (videoEl && remoteStream) {
+      if (videoEl.srcObject !== remoteStream) {
+        videoEl.srcObject = remoteStream;
       }
-      remoteVideoRef.current.play().catch((e) => {
-        console.warn("[WebRTC Diagnostic] Remote video playback notice:", e);
+      videoEl.play().catch((e) => {
+        console.warn(`[WebRTC:${correlationId}] Remote video playback notice:`, e);
       });
     }
-  }, [remoteStream]);
+  }, [remoteStream, isRemoteCameraOff, correlationId]);
 
   // Timer interval running strictly when connectionState === 'connected'
   useEffect(() => {
@@ -582,6 +590,19 @@ export function LiveVideoCallModal({
                       automatically when {otherPersonName} enters the session.
                     </p>
                   </div>
+
+                  {signalingNotice && (
+                    <div className="p-3 bg-indigo-950/80 border border-indigo-700/60 rounded-xl text-xs text-indigo-200 max-w-sm space-y-2 animate-in fade-in">
+                      <p>{signalingNotice}</p>
+                      <button
+                        onClick={retryMediaAndConnection}
+                        className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-semibold text-[11px] transition-colors cursor-pointer"
+                      >
+                        Retry Signaling Connection
+                      </button>
+                    </div>
+                  )}
+
                   {session.purpose && (
                     <div className="px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300 max-w-sm">
                       <span className="font-semibold text-indigo-300">
@@ -609,10 +630,16 @@ export function LiveVideoCallModal({
                   autoPlay
                   playsInline
                   muted
-                  className={`w-full h-full object-cover ${
-                    !cameraOn ? "hidden" : ""
+                  className={`w-full h-full object-cover transform -scale-x-100 ${
+                    !cameraOn || !localStream ? "hidden" : ""
                   }`}
                 />
+                {cameraOn && !localStream && (
+                  <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-slate-400 text-xs space-y-1.5 p-2 text-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+                    <span className="text-[11px]">Connecting camera...</span>
+                  </div>
+                )}
                 {!cameraOn && (
                   <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-slate-400 text-xs space-y-1">
                     <VideoOff className="h-6 w-6 text-slate-500" />
