@@ -118,7 +118,7 @@ function calculatePracticeLevel(metrics?: {
 /**
  * Fallback Gemini Audio Transcriber if Gnani is not available
  */
-async function fallbackGeminiTranscription(audioBuffer: Buffer, mimeType: string) {
+export async function fallbackGeminiTranscription(audioBuffer: Buffer, mimeType: string) {
   if (!ai) return null;
   const base64Audio = audioBuffer.toString("base64");
   const effectiveMime = mimeType ? mimeType.split(";")[0].trim() : "audio/webm";

@@ -14,7 +14,8 @@ import {
   Phone, 
   Mail,
   AlertCircle,
-  Sparkles
+  Sparkles,
+  Brain
 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { AdminUser, UserRole } from "../../types/supabase";
@@ -205,6 +206,12 @@ export function AdminUsersPage() {
             <Link to="/slp">
               <Button variant="outline" size="sm" className="text-xs">
                 SLP App
+              </Button>
+            </Link>
+            <Link to="/admin/evaluation">
+              <Button variant="outline" size="sm" className="text-xs text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100 flex items-center gap-1.5">
+                <Brain className="h-3.5 w-3.5 text-indigo-600" />
+                ML Benchmark
               </Button>
             </Link>
             <Button

@@ -14,6 +14,12 @@ import { corsairClient } from "./corsair";
 dotenv.config();
 
 import { runSpeechAnalysisPipeline } from "./src/services/ai/speechAnalysisPipeline";
+import {
+  DISFLUENCY_SPEECH_METADATA,
+  fetchLiveValidationSamples,
+  runDisfluencyEvaluation,
+  getLatestEvaluationReport,
+} from "./src/services/evaluation/disfluencyDatasetEvaluator";
 
 const { Pool } = pg;
 const POOLER_DB_URL = "postgresql://postgres.dbpcjfhrswhphitltpgb:SpeakEase%401234@aws-0-ap-south-1.pooler.supabase.com:6543/postgres";
@@ -205,7 +211,7 @@ try {
 }
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json());
 
@@ -863,6 +869,62 @@ app.get("/api/admin/users", async (req, res) => {
   } catch (err: any) {
     console.error("Admin users fetch error:", err);
     return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ========================================================
+// ML EVALUATION BENCHMARK PIPELINE ROUTES
+// Dataset: amaai-lab/DisfluencySpeech (Hugging Face, Apache-2.0)
+// SAFETY: Development evaluation only. No clinical patient writes.
+// ========================================================
+
+app.get("/api/dev/eval/dataset-info", (_req, res) => {
+  return res.json({
+    success: true,
+    dataset: DISFLUENCY_SPEECH_METADATA,
+  });
+});
+
+app.get("/api/dev/eval/samples", async (req, res) => {
+  try {
+    const limit = Math.min(10, Math.max(1, parseInt(req.query.limit as string) || 5));
+    const samples = await fetchLiveValidationSamples(limit);
+    return res.json({
+      success: true,
+      count: samples.length,
+      samples,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || err });
+  }
+});
+
+app.post("/api/dev/eval/run", async (req, res) => {
+  try {
+    const limit = Math.min(10, Math.max(1, parseInt(req.body?.limit as string) || 3));
+    const report = await runDisfluencyEvaluation(limit);
+    return res.json({
+      success: true,
+      report,
+    });
+  } catch (err: any) {
+    console.error("Evaluation run error:", err);
+    return res.status(500).json({ success: false, error: err.message || err });
+  }
+});
+
+app.get("/api/dev/eval/latest-report", async (_req, res) => {
+  try {
+    let report = getLatestEvaluationReport();
+    if (!report) {
+      report = await runDisfluencyEvaluation(3);
+    }
+    return res.json({
+      success: true,
+      report,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message || err });
   }
 });
 

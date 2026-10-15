@@ -120,7 +120,7 @@ Return a valid JSON object with this exact structure:
   "processing_summary": "<short 1-sentence objective factual summary of transcript features>"
 }`;
 
-    const candidateModels = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "allam-2-7b"];
+    const candidateModels = ["gemma2-9b-it", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"];
     let response: Response | null = null;
 
     for (const modelName of candidateModels) {

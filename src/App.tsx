@@ -38,6 +38,7 @@ import { SLPAssistant } from "./pages/slp/SLPAssistant";
 import { SLPWorkflows } from "./pages/slp/SLPWorkflows";
 import { DemoRoleSelectPage } from "./pages/DemoRoleSelectPage";
 import { AdminUsersPage } from "./pages/admin/AdminUsersPage";
+import { DisfluencyEvaluationPage } from "./pages/admin/DisfluencyEvaluationPage";
 import { AuthProvider } from "./contexts/AuthContext";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 
@@ -126,6 +127,22 @@ export default function App() {
             element={
               <ProtectedRoute allowedRoles={['ADMIN']}>
                 <AdminUsersPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/admin/evaluation" 
+            element={
+              <ProtectedRoute allowedRoles={['ADMIN', 'SLP']}>
+                <DisfluencyEvaluationPage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/slp/evaluation" 
+            element={
+              <ProtectedRoute allowedRoles={['SLP', 'ADMIN']}>
+                <DisfluencyEvaluationPage />
               </ProtectedRoute>
             } 
           />

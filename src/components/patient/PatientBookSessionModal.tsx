@@ -9,6 +9,8 @@ import {
   checkForSessionConflict,
   createCustomTimeSlot,
   validateCustomTimeSlot,
+  calculateDynamicDefaultCustomStartTime,
+  getLocalDateString,
   TimeSlot,
   DAY_NAMES
 } from "../../lib/liveSessionUtils";
@@ -51,10 +53,7 @@ export function PatientBookSessionModal({
 
   // Booking details state
   const [selectedDate, setSelectedDate] = useState<string>(() => {
-    // Default to tomorrow YYYY-MM-DD
-    const tom = new Date();
-    tom.setDate(tom.getDate() + 1);
-    return tom.toISOString().split("T")[0];
+    return calculateDynamicDefaultCustomStartTime().dateStr;
   });
   const [duration, setDuration] = useState<number>(30);
   const [purpose, setPurpose] = useState<string>("");
@@ -67,8 +66,33 @@ export function PatientBookSessionModal({
 
   // Custom Time Mode state
   const [timeSelectionMode, setTimeSelectionMode] = useState<"slots" | "custom">("slots");
-  const [customStartTime, setCustomStartTime] = useState<string>("11:40");
+  const [customStartTime, setCustomStartTime] = useState<string>(() => {
+    return calculateDynamicDefaultCustomStartTime().time24Str;
+  });
   const [customValidationError, setCustomValidationError] = useState<string | null>(null);
+
+  // Handler to enter custom time mode with dynamically calculated +10m default
+  const handleSelectCustomTimeMode = () => {
+    setTimeSelectionMode("custom");
+    const dynamicStart = calculateDynamicDefaultCustomStartTime();
+    setCustomStartTime(dynamicStart.time24Str);
+
+    const todayLocal = getLocalDateString();
+    // If default crosses midnight, or current selectedDate is today/past, advance date to next day
+    if (selectedDate < dynamicStart.dateStr || (selectedDate <= todayLocal && dynamicStart.didCrossMidnight)) {
+      setSelectedDate(dynamicStart.dateStr);
+    }
+  };
+
+  // Reset/align date when modal is opened if previous date was in the past
+  useEffect(() => {
+    if (!isOpen) return;
+    const dynamicStart = calculateDynamicDefaultCustomStartTime();
+    const todayLocal = getLocalDateString();
+    if (!selectedDate || selectedDate < todayLocal) {
+      setSelectedDate(dynamicStart.dateStr);
+    }
+  }, [isOpen]);
 
   // 1. Fetch active assigned SLP & Availability
   useEffect(() => {
@@ -290,7 +314,7 @@ export function PatientBookSessionModal({
 
   if (!isOpen) return null;
 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = getLocalDateString();
   const selectedDayName = selectedDate
     ? DAY_NAMES[new Date(selectedDate + "T00:00:00").getDay()]
     : "";
@@ -442,10 +466,7 @@ export function PatientBookSessionModal({
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        setTimeSelectionMode("custom");
-                        if (!customStartTime) setCustomStartTime("11:40");
-                      }}
+                      onClick={handleSelectCustomTimeMode}
                       className={`px-3 py-1 font-semibold rounded-lg transition-all cursor-pointer ${
                         timeSelectionMode === "custom"
                           ? "bg-white text-indigo-700 shadow-2xs"
@@ -512,7 +533,9 @@ export function PatientBookSessionModal({
                           Calculated End Time
                         </label>
                         <div className="px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 text-sm font-semibold text-slate-800 flex items-center justify-between">
-                          <span>{selectedSlot ? selectedSlot.endTimeStr : "--:--"}</span>
+                          <span>
+                            {createCustomTimeSlot(selectedDate, customStartTime, duration)?.endTimeStr || "--:--"}
+                          </span>
                           <span className="text-xs font-normal text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md">
                             +{duration} min
                           </span>
@@ -523,6 +546,14 @@ export function PatientBookSessionModal({
                     {/* Preset buttons for convenience */}
                     <div className="flex flex-wrap items-center gap-1.5 pt-1">
                       <span className="text-[11px] font-medium text-slate-500 mr-1">Quick Picks:</span>
+                      <button
+                        type="button"
+                        onClick={handleSelectCustomTimeMode}
+                        className="px-2 py-0.5 rounded-lg text-xs font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 hover:bg-indigo-200 transition-colors cursor-pointer"
+                        title="Set start time to 10 minutes from right now"
+                      >
+                        ⚡ Now +10m
+                      </button>
                       {["09:15", "10:40", "11:40", "13:20", "14:45", "16:15"].map((timeVal) => (
                         <button
                           key={timeVal}

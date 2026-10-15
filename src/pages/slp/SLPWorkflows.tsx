@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { Activity, AlertTriangle, CheckCircle, HelpCircle, Clock } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Activity, AlertTriangle, CheckCircle, HelpCircle, Clock, Brain } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 
 type WorkflowLog = {
@@ -83,14 +84,23 @@ export function SLPWorkflows() {
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto py-8">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-          <Activity className="w-6 h-6 text-indigo-600" />
-          Corsair Workflows (Admin)
-        </h1>
-        <p className="text-slate-500 mt-1">
-          Monitor the status of internal background automations and triggers.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+            <Activity className="w-6 h-6 text-indigo-600" />
+            Corsair Workflows (Admin)
+          </h1>
+          <p className="text-slate-500 mt-1">
+            Monitor the status of internal background automations and triggers.
+          </p>
+        </div>
+        <Link
+          to="/admin/evaluation"
+          className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 text-xs font-semibold transition-colors shrink-0"
+        >
+          <Brain className="w-4 h-4 text-indigo-600" />
+          ML Disfluency Benchmark
+        </Link>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">

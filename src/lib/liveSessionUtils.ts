@@ -43,6 +43,16 @@ export function formatTimeFromDate(d: Date): string {
 }
 
 /**
+ * Convert Date object to local calendar date string "YYYY-MM-DD"
+ */
+export function getLocalDateString(d: Date = new Date()): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
  * Generate discrete time slots from SLP weekly availability & existing booked sessions.
  */
 export function generateAvailableSlots(
@@ -126,6 +136,58 @@ export function generateAvailableSlots(
 }
 
 /**
+ * Calculate dynamic default custom appointment start time.
+ * Adds 10 minutes to current local time and rounds up to the next full minute
+ * if seconds/milliseconds are non-zero, ensuring at least 10 minutes of lead time.
+ * Correctly accounts for midnight rollover by advancing the date.
+ */
+export function calculateDynamicDefaultCustomStartTime(baseDate: Date = new Date()): {
+  dateStr: string; // "YYYY-MM-DD"
+  time24Str: string; // "HH:mm" (24-hour format for <input type="time">)
+  time12Str: string; // e.g. "12:54 PM"
+  fullDate: Date;
+  didCrossMidnight: boolean;
+} {
+  const now = new Date(baseDate);
+  const hasSubMinute = now.getSeconds() > 0 || now.getMilliseconds() > 0;
+
+  // Clone date and add 10 minutes
+  const target = new Date(now.getTime() + 10 * 60 * 1000);
+
+  if (hasSubMinute) {
+    target.setSeconds(0, 0);
+    target.setMinutes(target.getMinutes() + 1);
+  } else {
+    target.setSeconds(0, 0);
+  }
+
+  // Check if midnight was crossed relative to baseDate local day
+  const didCrossMidnight =
+    target.getFullYear() !== now.getFullYear() ||
+    target.getMonth() !== now.getMonth() ||
+    target.getDate() !== now.getDate();
+
+  const year = target.getFullYear();
+  const month = String(target.getMonth() + 1).padStart(2, "0");
+  const day = String(target.getDate()).padStart(2, "0");
+  const dateStr = `${year}-${month}-${day}`;
+
+  const hours = String(target.getHours()).padStart(2, "0");
+  const minutes = String(target.getMinutes()).padStart(2, "0");
+  const time24Str = `${hours}:${minutes}`;
+
+  const time12Str = formatTime24to12(time24Str);
+
+  return {
+    dateStr,
+    time24Str,
+    time12Str,
+    fullDate: target,
+    didCrossMidnight,
+  };
+}
+
+/**
  * Create a TimeSlot object for a custom start time (e.g. "11:40") and duration
  */
 export function createCustomTimeSlot(
@@ -165,7 +227,8 @@ export function validateCustomTimeSlot(
   slot: TimeSlot | null,
   dateStr: string,
   availabilities: SLPAvailability[],
-  existingSessions: LiveSession[]
+  existingSessions: LiveSession[],
+  minLeadMinutes: number = 10
 ): { isValid: boolean; error: string | null } {
   if (!slot || !dateStr) {
     return { isValid: false, error: "Please enter a valid start time." };
@@ -195,12 +258,19 @@ export function validateCustomTimeSlot(
   const slotEnd = new Date(slot.endISO);
   const now = new Date();
 
-  // 2. Rule: Must be in future (at least 2 mins from now)
-  const minStartAllowed = new Date(now.getTime() + 2 * 60 * 1000);
-  if (slotStart < minStartAllowed) {
+  // 2. Rule: Must satisfy minimum lead time (at least 10 minutes from now)
+  // 45-second grace window to absorb minute-level precision in <input type="time">
+  const minStartAllowed = new Date(now.getTime() + (minLeadMinutes * 60 - 45) * 1000);
+  if (slotStart.getTime() < minStartAllowed.getTime()) {
+    if (slotStart.getTime() <= now.getTime()) {
+      return {
+        isValid: false,
+        error: "Selected time is in the past. Please select a future time."
+      };
+    }
     return {
       isValid: false,
-      error: "Selected time is in the past. Please select a future time."
+      error: `Selected start time must be at least ${minLeadMinutes} minutes in the future.`
     };
   }
 
@@ -290,10 +360,15 @@ export async function checkForSessionConflict(
   const startIsoStr = start.toISOString();
   const endIsoStr = end.toISOString();
 
-  // 1. Verify not in past
+  // 1. Verify not in past and satisfies minimum 10-minute lead time
   const now = new Date();
-  if (start.getTime() < now.getTime() + 60 * 1000) {
-    return "The requested session start time is in the past. Please select a future time.";
+  // 45-second grace window to absorb form filling, network and clock skew latency
+  const minLeadTimeMs = (10 * 60 - 45) * 1000;
+  if (start.getTime() < now.getTime() + minLeadTimeMs) {
+    if (start.getTime() <= now.getTime()) {
+      return "The requested session start time is in the past. Please select a future time.";
+    }
+    return "The requested session start time must be at least 10 minutes in the future.";
   }
 
   // 2. Authoritative Working Hours Check against slp_availability in database
