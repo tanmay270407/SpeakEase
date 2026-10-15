@@ -15,7 +15,7 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
   let result = calculatePracticeLevel(metrics);
 
   // Fallback to restored practiceLevel from session record if metrics object isn't full
-  if (!result && practiceLevel) {
+  if ((!result || result.level === 'Not enough data yet') && practiceLevel && practiceLevel !== 'Not enough data yet') {
     const stepIdx = PRACTICE_LEVEL_STEPS.indexOf(practiceLevel as any);
     if (stepIdx !== -1) {
       const score = stepIdx + 1;
@@ -33,18 +33,27 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
     }
   }
 
-  // Strictly do not render if real analysis has not completed
   if (!result) {
     return null;
   }
 
-  const activeIndex = Math.max(0, Math.min(3, result.score - 1));
+  const isInsufficient = result.score === 0 || result.level === 'Not enough data yet';
+  const activeIndex = isInsufficient ? -1 : Math.max(0, Math.min(3, result.score - 1));
 
   // Marker percentage along the horizontal track (0%, 33.33%, 66.67%, 100%)
   const positionPercentages = [0, 33.333, 66.667, 100];
-  const activePercentage = positionPercentages[activeIndex];
+  const activePercentage = isInsufficient ? 0 : positionPercentages[activeIndex];
 
   const getLevelTheme = (index: number) => {
+    if (index === -1) {
+      return {
+        markerBorder: 'border-slate-400',
+        markerDot: 'bg-slate-400',
+        badge: 'bg-slate-100 text-slate-700 border-slate-200',
+        activeText: 'text-slate-700 font-semibold',
+        trackFill: 'bg-slate-200'
+      };
+    }
     switch (index) {
       case 3: // Strong Progress
         return {
@@ -87,13 +96,13 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
   return (
     <div 
       id="practice-level-meter" 
-      className={`p-6 rounded-xl border border-slate-200 bg-white shadow-xs space-y-6 ${className}`}
+      className={`p-6 rounded-xl border border-slate-200 bg-white shadow-xs space-y-5 ${className}`}
     >
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-slate-900 tracking-tight">Practice Level</h3>
-          <p className="text-xs text-slate-500">Continuous progression based on this session's speech analysis.</p>
+          <p className="text-xs text-slate-500">Continuous practice performance indicator based on this session's speech analysis.</p>
         </div>
         <span 
           id="practice-level-badge" 
@@ -104,7 +113,7 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
       </div>
 
       {/* Horizontal Progress Meter */}
-      <div className="space-y-4 pt-2 pb-1">
+      <div className="space-y-4 pt-1 pb-1">
         {/* The Track Container */}
         <div className="relative px-2">
           {/* Base Background Track with subtle low-to-high color progression */}
@@ -113,16 +122,18 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
             <div className="absolute inset-0 bg-gradient-to-r from-amber-100 via-sky-100 via-indigo-100 to-emerald-100 opacity-70" />
             
             {/* Active filled portion up to current level */}
-            <div 
-              className={`h-full bg-gradient-to-r ${currentTheme.trackFill} transition-all duration-500 rounded-full`}
-              style={{ width: `${activePercentage}%` }}
-            />
+            {!isInsufficient && (
+              <div 
+                className={`h-full bg-gradient-to-r ${currentTheme.trackFill} transition-all duration-500 rounded-full`}
+                style={{ width: `${activePercentage}%` }}
+              />
+            )}
           </div>
 
           {/* Step Tick Marks along the track */}
           <div className="absolute top-1/2 -translate-y-1/2 left-2 right-2 flex justify-between pointer-events-none">
             {PRACTICE_LEVEL_STEPS.map((_, idx) => {
-              const isPastOrCurrent = idx <= activeIndex;
+              const isPastOrCurrent = !isInsufficient && idx <= activeIndex;
               return (
                 <div 
                   key={idx} 
@@ -135,22 +146,24 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
           </div>
 
           {/* Active Level Marker / Indicator Pin */}
-          <div 
-            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-500 pointer-events-none z-10"
-            style={{ 
-              left: `calc(${activePercentage}% + ${8 - (activePercentage * 16) / 100}px)` 
-            }}
-          >
-            <div className={`w-6 h-6 rounded-full bg-white border-2 ${currentTheme.markerBorder} shadow-md flex items-center justify-center ring-4 ring-white`}>
-              <div className={`w-2.5 h-2.5 rounded-full ${currentTheme.markerDot}`} />
+          {!isInsufficient && (
+            <div 
+              className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 transition-all duration-500 pointer-events-none z-10"
+              style={{ 
+                left: `calc(${activePercentage}% + ${8 - (activePercentage * 16) / 100}px)` 
+              }}
+            >
+              <div className={`w-6 h-6 rounded-full bg-white border-2 ${currentTheme.markerBorder} shadow-md flex items-center justify-center ring-4 ring-white`}>
+                <div className={`w-2.5 h-2.5 rounded-full ${currentTheme.markerDot}`} />
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Labels below the horizontal track */}
         <div className="grid grid-cols-4 pt-2">
           {PRACTICE_LEVEL_STEPS.map((stepName, idx) => {
-            const isCurrent = idx === activeIndex;
+            const isCurrent = !isInsufficient && idx === activeIndex;
             const alignClass = 
               idx === 0 
                 ? 'text-left' 
@@ -181,8 +194,11 @@ export function PracticeLevelMeter({ metrics, practiceLevel, className = '' }: P
       </div>
 
       {/* Clinical Practice Description */}
-      <div className="text-xs text-slate-600 bg-slate-50 p-3.5 rounded-lg border border-slate-100 leading-relaxed">
-        {result.description}
+      <div className="text-xs text-slate-600 bg-slate-50 p-3.5 rounded-lg border border-slate-100 leading-relaxed space-y-1">
+        <p>{result.description}</p>
+        <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-200/60 font-normal">
+          <strong className="font-semibold text-slate-700">Practice note:</strong> This is an automated practice-performance indicator for tracking exercise consistency — not a medical diagnosis or stammering clinical assessment.
+        </p>
       </div>
     </div>
   );

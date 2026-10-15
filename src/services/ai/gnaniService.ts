@@ -41,7 +41,7 @@ export async function transcribeAudioWithGnani(
         "x-language-code": "en-IN",
       },
       body: audioBuffer,
-      signal: AbortSignal.timeout(12000), // 12s timeout for fast responsiveness
+      signal: AbortSignal.timeout(3500), // 3.5s timeout for fast responsiveness
     });
 
     if (!response.ok) {

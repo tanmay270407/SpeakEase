@@ -10,6 +10,57 @@ export interface GroqFastProcessingResult {
   provider: "groq" | "fallback";
 }
 
+export async function transcribeAudioWithGroqWhisper(
+  audioBuffer: Buffer,
+  mimeType: string = "audio/webm"
+): Promise<{ transcript: string; wordCount: number; durationSec: number; speechRate: number } | null> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey || apiKey.trim() === "" || apiKey === "YOUR_GROQ_API_KEY") {
+    return null;
+  }
+  console.log(`[groq_whisper_started] Groq Whisper-large-v3-turbo STT initiated (${audioBuffer.length} bytes)`);
+  try {
+    const effectiveMime = mimeType ? mimeType.split(";")[0].trim() : "audio/webm";
+    const formData = new FormData();
+    formData.append("file", new Blob([audioBuffer], { type: effectiveMime }), "recording.webm");
+    formData.append("model", "whisper-large-v3-turbo");
+    formData.append("response_format", "verbose_json");
+
+    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: formData,
+      signal: AbortSignal.timeout(12000),
+    });
+
+    if (!response.ok) {
+      console.warn(`[groq_whisper_notice] Groq Whisper returned HTTP ${response.status}`);
+      return null;
+    }
+
+    const data: any = await response.json();
+    const transcript = (data.text || "").trim();
+    if (!transcript) return null;
+
+    const durationSec = typeof data.duration === "number" && data.duration > 0 ? data.duration : 0;
+    const words = transcript.split(/\s+/).filter(Boolean);
+    const speechRate = durationSec > 0 ? Math.round((words.length / durationSec) * 60) : 0;
+
+    console.log(`[groq_whisper_completed] Groq Whisper transcribed ${words.length} words successfully.`);
+    return {
+      transcript,
+      wordCount: words.length,
+      durationSec,
+      speechRate,
+    };
+  } catch (err: any) {
+    console.warn("[groq_whisper_notice] Groq Whisper error:", err.message || err);
+    return null;
+  }
+}
+
 /**
  * Groq Fast Processing Layer.
  * Performs fast language processing, transcript cleaning, word count extraction,
@@ -69,34 +120,49 @@ Return a valid JSON object with this exact structure:
   "processing_summary": "<short 1-sentence objective factual summary of transcript features>"
 }`;
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [
-          {
-            role: "system",
-            content: "You are a fast computational text processor. Respond only in valid JSON format.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        response_format: { type: "json_object" },
-        temperature: 0.1,
-        max_tokens: 350,
-      }),
-      signal: AbortSignal.timeout(6000), // 6s fast timeout
-    });
+    const candidateModels = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "allam-2-7b"];
+    let response: Response | null = null;
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => "");
-      console.warn(`[groq_processing_notice] Groq API returned HTTP ${response.status}: ${errText.substring(0, 150)}`);
+    for (const modelName of candidateModels) {
+      try {
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [
+              {
+                role: "system",
+                content: "You are a fast computational text processor. Respond only in valid JSON format.",
+              },
+              {
+                role: "user",
+                content: prompt,
+              },
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0.1,
+            max_tokens: 350,
+          }),
+          signal: AbortSignal.timeout(6000), // 6s fast timeout
+        });
+
+        if (res.ok) {
+          response = res;
+          break;
+        } else {
+          console.log(`[groq_processing_info] Groq model '${modelName}' returned status ${res.status}`);
+        }
+      } catch (e) {
+        console.log(`[groq_processing_info] Groq request for '${modelName}' failed, trying fallback.`);
+      }
+    }
+
+    if (!response || !response.ok) {
+      console.log("[groq_processing_info] Groq API unavailable or model unsupported. Using local fast parser fallback.");
       return fallbackLocalParser(transcript, acousticMetrics);
     }
 
@@ -118,7 +184,7 @@ Return a valid JSON object with this exact structure:
       provider: "groq",
     };
   } catch (err: any) {
-    console.warn("[groq_processing_notice] Groq fast processing fallback:", err.message || err);
+    console.log("[groq_processing_info] Groq fast processing fallback executed:", err?.message || err);
     return fallbackLocalParser(transcript, acousticMetrics);
   }
 }

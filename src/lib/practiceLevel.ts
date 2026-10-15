@@ -1,8 +1,8 @@
-export type PracticeLevelType = 'Needs Practice' | 'Developing' | 'Good Progress' | 'Strong Progress';
+export type PracticeLevelType = 'Needs Practice' | 'Developing' | 'Good Progress' | 'Strong Progress' | 'Not enough data yet';
 
 export interface PracticeLevelResult {
   level: PracticeLevelType;
-  score: number; // 1 to 4
+  score: number; // 0 to 4 (0 = Not enough data)
   description: string;
 }
 
@@ -22,9 +22,27 @@ export function calculatePracticeLevel(metrics?: {
   pauses?: number | null;
   prolongations?: number | null;
   speech_rate?: number | string | null;
-} | null): PracticeLevelResult | null {
-  if (!metrics || (metrics.repetitions === undefined && metrics.pauses === undefined && metrics.prolongations === undefined && metrics.speech_rate === undefined)) {
-    return null;
+  duration?: number | null;
+  wordCount?: number | null;
+} | null): PracticeLevelResult {
+  if (!metrics) {
+    return {
+      level: 'Not enough data yet',
+      score: 0,
+      description: 'Record a longer practice passage (3+ seconds) to generate a practice performance level.'
+    };
+  }
+
+  const duration = Number(metrics.duration) || 0;
+  const wordCount = Number(metrics.wordCount) || 0;
+  
+  // Insufficient audio or word evidence check
+  if (duration > 0 && duration < 3) {
+    return {
+      level: 'Not enough data yet',
+      score: 0,
+      description: 'The recording was too short to reliably evaluate speech flow metrics.'
+    };
   }
 
   const rep = Number(metrics.repetitions) || 0;
@@ -32,7 +50,6 @@ export function calculatePracticeLevel(metrics?: {
   const prol = Number(metrics.prolongations) || 0;
   const rate = Number(metrics.speech_rate) || 0;
 
-  // Derive score from objective acoustic markers:
   // Base score is 4 (Strong Progress)
   let score = 4;
 
@@ -80,3 +97,4 @@ export function calculatePracticeLevel(metrics?: {
       };
   }
 }
+

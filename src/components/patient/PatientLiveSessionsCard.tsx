@@ -6,6 +6,7 @@ import { Card, CardContent } from "../ui/Card";
 import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
 import { Avatar } from "../Avatar";
+import { LiveVideoCallModal } from "../live/LiveVideoCallModal";
 import {
   Video,
   Calendar,
@@ -25,6 +26,7 @@ export function PatientLiveSessionsCard() {
   const [sessions, setSessions] = useState<ExtendedLiveSession[]>([]);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [cancelModalSession, setCancelModalSession] = useState<ExtendedLiveSession | null>(null);
+  const [selectedCallSession, setSelectedCallSession] = useState<ExtendedLiveSession | null>(null);
 
   const fetchPatientLiveSessions = async () => {
     if (!profile?.id) return;
@@ -351,9 +353,7 @@ export function PatientLiveSessionsCard() {
                     Cancel
                   </Button>
                   <Button
-                    onClick={() =>
-                      alert("Meeting Room ready. Video link activates at scheduled session time.")
-                    }
+                    onClick={() => setSelectedCallSession(session)}
                     className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8 px-3.5 font-semibold cursor-pointer shadow-2xs"
                   >
                     <Video className="h-3.5 w-3.5 mr-1.5" />
@@ -396,6 +396,19 @@ export function PatientLiveSessionsCard() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Live Video Call Room Modal */}
+      {selectedCallSession && (
+        <LiveVideoCallModal
+          isOpen={!!selectedCallSession}
+          session={selectedCallSession}
+          onClose={() => {
+            setSelectedCallSession(null);
+            fetchPatientLiveSessions();
+          }}
+          userRole="patient"
+        />
       )}
     </div>
   );

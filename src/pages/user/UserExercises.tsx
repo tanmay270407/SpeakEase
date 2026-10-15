@@ -196,9 +196,6 @@ export function UserExercises() {
                 <CardTitle className="text-lg font-bold text-slate-900 group-hover:text-indigo-600 transition-colors">
                   {exercise.name}
                 </CardTitle>
-                <CardDescription className="line-clamp-2 mt-1 text-xs text-slate-600 leading-relaxed">
-                  {exercise.description}
-                </CardDescription>
               </CardHeader>
               <CardContent className="pt-0 border-t border-slate-100 mt-2 bg-slate-50/40 p-4">
                 <div className="flex items-center justify-between">

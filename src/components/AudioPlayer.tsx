@@ -4,21 +4,103 @@ import { supabase } from '../lib/supabase';
 import { formatDuration } from '../lib/utils';
 import { getAuthoritativeAudioDuration } from '../lib/audioDuration';
 
+export interface SegmentPlaybackRequest {
+  id: string;
+  startTimeSec: number;
+  endTimeSec: number;
+  triggerTimestamp?: number;
+}
+
 interface AudioPlayerProps {
   sessionId: string;
   initialDuration?: number;
+  seekTimeSec?: number | null;
+  segmentRequest?: SegmentPlaybackRequest | null;
+  onSegmentPlaybackEnd?: (segmentId: string) => void;
   onDurationLoaded?: (duration: number) => void;
   onError?: (error: string) => void;
 }
 
-export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onError }: AudioPlayerProps) {
+export function AudioPlayer({
+  sessionId,
+  initialDuration,
+  seekTimeSec,
+  segmentRequest,
+  onSegmentPlaybackEnd,
+  onDurationLoaded,
+  onError,
+}: AudioPlayerProps) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(initialDuration || 0);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const activeSegmentRef = useRef<{ id: string; startTimeSec: number; endTimeSec: number } | null>(null);
+
+  // Handle seekTimeSec legacy prop
+  useEffect(() => {
+    if (typeof seekTimeSec === 'number' && audioRef.current && audioUrl) {
+      activeSegmentRef.current = null;
+      audioRef.current.currentTime = Math.max(0, seekTimeSec);
+      setProgress(Math.max(0, seekTimeSec));
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  }, [seekTimeSec, audioUrl]);
+
+  // Handle segmentPlayback requests (Seek to startTime, play until endTime, then stop)
+  useEffect(() => {
+    if (!audioRef.current || !audioUrl) return;
+
+    if (!segmentRequest) {
+      // If segmentRequest was reset to null, pause audio if active segment was playing
+      if (activeSegmentRef.current) {
+        audioRef.current.pause();
+        activeSegmentRef.current = null;
+        setIsPlaying(false);
+      }
+      return;
+    }
+
+    const { id, startTimeSec, endTimeSec } = segmentRequest;
+
+    if (typeof startTimeSec !== 'number' || isNaN(startTimeSec) || startTimeSec < 0) {
+      console.warn("Invalid segment start timestamp:", startTimeSec);
+      if (onError) onError("Invalid event timestamp for audio replay.");
+      if (onSegmentPlaybackEnd) onSegmentPlaybackEnd(id);
+      return;
+    }
+
+    const validEnd = typeof endTimeSec === 'number' && !isNaN(endTimeSec) && endTimeSec > startTimeSec
+      ? endTimeSec
+      : startTimeSec + 0.8;
+
+    // Pause current audio before resetting position
+    audioRef.current.pause();
+
+    // Set active segment reference BEFORE changing currentTime
+    activeSegmentRef.current = { id, startTimeSec, endTimeSec: validEnd };
+
+    // Seek to exact segment start
+    audioRef.current.currentTime = startTimeSec;
+    setProgress(startTimeSec);
+
+    // Play segment
+    audioRef.current
+      .play()
+      .then(() => {
+        setIsPlaying(true);
+      })
+      .catch((err) => {
+        console.warn("Error playing audio segment:", err);
+        activeSegmentRef.current = null;
+        setIsPlaying(false);
+        if (onSegmentPlaybackEnd) onSegmentPlaybackEnd(id);
+        if (onError) onError("Audio segment playback failed.");
+      });
+  }, [segmentRequest, audioUrl]);
 
   useEffect(() => {
     if (initialDuration && initialDuration > 0 && duration !== initialDuration) {
@@ -54,7 +136,6 @@ export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onEr
         
         if (isMounted) {
           setAudioUrl(url);
-          // Derive authoritative media duration directly from the audio blob
           getAuthoritativeAudioDuration(blob).then((exactDur) => {
             if (isMounted && exactDur > 0) {
               setDuration(exactDur);
@@ -93,17 +174,38 @@ export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onEr
 
   const togglePlay = () => {
     if (!audioRef.current) return;
+    // Clear active segment if user interacts with full player manually
+    if (activeSegmentRef.current) {
+      const prevId = activeSegmentRef.current.id;
+      activeSegmentRef.current = null;
+      if (onSegmentPlaybackEnd) onSegmentPlaybackEnd(prevId);
+    }
+
     if (isPlaying) {
       audioRef.current.pause();
+      setIsPlaying(false);
     } else {
-      audioRef.current.play();
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
     }
-    setIsPlaying(!isPlaying);
   };
 
   const handleTimeUpdate = () => {
     if (!audioRef.current) return;
-    setProgress(audioRef.current.currentTime);
+    const current = audioRef.current.currentTime;
+    setProgress(current);
+
+    // Precise segment end boundary check
+    if (activeSegmentRef.current) {
+      if (current >= activeSegmentRef.current.endTimeSec) {
+        const finishedId = activeSegmentRef.current.id;
+        audioRef.current.pause();
+        activeSegmentRef.current = null;
+        setIsPlaying(false);
+        if (onSegmentPlaybackEnd) {
+          onSegmentPlaybackEnd(finishedId);
+        }
+      }
+    }
   };
 
   const updateLoadedDuration = () => {
@@ -118,19 +220,25 @@ export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onEr
     }
   };
 
-  const handleLoadedMetadata = () => {
-    updateLoadedDuration();
-  };
-
-  const handleDurationChange = () => {
-    updateLoadedDuration();
-  };
-
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!audioRef.current) return;
+    if (activeSegmentRef.current) {
+      const prevId = activeSegmentRef.current.id;
+      activeSegmentRef.current = null;
+      if (onSegmentPlaybackEnd) onSegmentPlaybackEnd(prevId);
+    }
     const time = Number(e.target.value);
     audioRef.current.currentTime = time;
     setProgress(time);
+  };
+
+  const handleEnded = () => {
+    setIsPlaying(false);
+    if (activeSegmentRef.current) {
+      const finishedId = activeSegmentRef.current.id;
+      activeSegmentRef.current = null;
+      if (onSegmentPlaybackEnd) onSegmentPlaybackEnd(finishedId);
+    }
   };
 
   if (loading) {
@@ -174,6 +282,7 @@ export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onEr
             type="range"
             min={0}
             max={duration || 100}
+            step={0.1}
             value={progress}
             onChange={handleSeek}
             className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
@@ -190,11 +299,12 @@ export function AudioPlayer({ sessionId, initialDuration, onDurationLoaded, onEr
         ref={audioRef}
         src={audioUrl}
         onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onDurationChange={handleDurationChange}
-        onEnded={() => setIsPlaying(false)}
+        onLoadedMetadata={updateLoadedDuration}
+        onDurationChange={updateLoadedDuration}
+        onEnded={handleEnded}
         className="hidden"
       />
     </div>
   );
 }
+

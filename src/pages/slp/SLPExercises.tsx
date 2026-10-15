@@ -396,10 +396,6 @@ export function SLPExercises() {
                               {exercise.category}
                             </div>
                           )}
-
-                          <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
-                            {exercise.description}
-                          </p>
                         </div>
 
                         {/* Toggle Action */}
@@ -504,9 +500,6 @@ export function SLPExercises() {
                               Est. {exercise.duration ? `${exercise.duration}s` : '60s'}
                             </span>
                           </div>
-                          <p className="text-xs text-slate-600 mt-1 leading-relaxed max-w-3xl">
-                            {exercise.description}
-                          </p>
                         </div>
 
                         <div className="shrink-0 flex items-center gap-2 self-start sm:self-auto">

@@ -24,7 +24,8 @@ import {
   Calendar,
   User,
   Volume2,
-  Video
+  Video,
+  FileText
 } from "lucide-react";
 import { formatDuration } from "../../lib/utils";
 import { TableRowSkeleton } from "../../components/ui/Skeleton";
@@ -47,6 +48,12 @@ interface SessionRecord {
   duration: number;
   review_status: string;
   created_at: string;
+  transcript?: string | null;
+  ai_analysis?: any;
+  practice_focus?: string | null;
+  recommended_exercise?: string | null;
+  recommended_duration?: number | null;
+  practice_level?: string | null;
   profiles?: PatientInfo;
   exercises?: { name: string } | null;
   speech_metrics?: {
@@ -155,6 +162,12 @@ export function SLPSessions() {
             duration,
             review_status,
             created_at,
+            transcript,
+            ai_analysis,
+            practice_focus,
+            recommended_exercise,
+            recommended_duration,
+            practice_level,
             profiles:user_id ( id, full_name, email, avatar_url ),
             exercises:exercise_id ( name ),
             speech_metrics ( repetitions, pauses, prolongations, speech_rate )
@@ -877,11 +890,35 @@ export function SLPSessions() {
                   />
                 </div>
 
+                {/* Transcribed Speech Text */}
+                <div className="space-y-2">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-teal-600" />
+                    Transcribed Speech Text
+                  </h3>
+                  {(() => {
+                    const currentTranscript = sessionDetail?.observation?.transcript || selectedSession?.transcript || sessionDetail?.observation?.ai_analysis?.transcript;
+                    if (currentTranscript && currentTranscript.trim().length > 0) {
+                      return (
+                        <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-800 leading-relaxed font-mono">
+                          "{currentTranscript}"
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="p-3 rounded-lg bg-amber-50/50 border border-amber-200/60 text-xs text-amber-800 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>Verbatim speech transcript unavailable or missing for this practice recording.</span>
+                      </div>
+                    );
+                  })()}
+                </div>
+
                 {/* Objective Speech Observations / Metrics */}
                 <div className="space-y-2">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center gap-2">
                     <Activity className="w-4 h-4 text-indigo-600" />
-                    Speech Metrics
+                    Speech Metrics & Pattern Observations
                   </h3>
 
                   {sessionDetail?.metrics ? (
@@ -905,7 +942,7 @@ export function SLPSessions() {
                         </div>
                       </div>
                       <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
-                        <div className="text-[11px] text-slate-500 font-medium">Speech Rate</div>
+                        <div className="text-[11px] text-slate-500 font-medium">Speaking Rate</div>
                         <div className="text-lg font-bold text-slate-900 mt-0.5">
                           {sessionDetail.metrics.speech_rate ? `${Math.round(Number(sessionDetail.metrics.speech_rate))} WPM` : "N/A"}
                         </div>
@@ -926,15 +963,37 @@ export function SLPSessions() {
                   />
                 )}
 
-                {/* Corsair / SpeakEase AI Observation */}
-                <div className="space-y-2">
+                {/* AI Clinical Observations & Recommended Next Practice */}
+                <div className="space-y-3">
                   <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-700 flex items-center gap-2">
                     <BrainCircuit className="w-4 h-4 text-indigo-600" />
-                    AI Clinical Observations
+                    AI Clinical Observations & Practice Guidance
                   </h3>
                   {sessionDetail?.observation ? (
-                    <div className="p-3.5 rounded-lg bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-950 leading-relaxed">
-                      {sessionDetail.observation.observation_text || sessionDetail.observation.observation}
+                    <div className="space-y-2.5">
+                      <div className="p-3.5 rounded-lg bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-950 leading-relaxed">
+                        {sessionDetail.observation.observation_text || sessionDetail.observation.observation}
+                      </div>
+
+                      {/* Recommended Exercise Banner */}
+                      {(sessionDetail.observation.recommended_exercise || sessionDetail.observation.practice_focus) && (
+                        <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-lg text-xs space-y-1">
+                          <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                            <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>Recommended Next Practice: {sessionDetail.observation.recommended_exercise || "Easy Onset & Gentle Voicing"}</span>
+                          </div>
+                          {sessionDetail.observation.practice_focus && (
+                            <div className="text-emerald-800">
+                              Focus Area: <strong>{sessionDetail.observation.practice_focus}</strong> ({sessionDetail.observation.recommended_duration || 3} min)
+                            </div>
+                          )}
+                          {sessionDetail.observation.recommendation_reason && (
+                            <p className="text-emerald-700/90 text-[11px] pt-0.5">
+                              {sessionDetail.observation.recommendation_reason}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : loadingDetail ? (
                     <div className="p-4 text-center text-xs text-slate-400">Loading observation...</div>

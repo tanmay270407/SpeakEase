@@ -35,14 +35,14 @@ export function RecommendedPracticeCard({
               <Sparkles className="w-4 h-4" />
             </div>
             <div>
-              <CardTitle className="text-lg font-bold text-slate-900">Recommended Next Practice</CardTitle>
+              <CardTitle className="text-lg font-bold text-slate-900">What to Practise Next</CardTitle>
               <CardDescription className="text-xs text-slate-500">
                 Personalized practice focus based on your recent session observations.
               </CardDescription>
             </div>
           </div>
           <span className="hidden sm:inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">
-            What's Next?
+            Recommended Action
           </span>
         </div>
       </CardHeader>
@@ -100,16 +100,16 @@ export function RecommendedPracticeCard({
         </div>
 
         {/* Action Button */}
-        <div className="pt-1 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="pt-1 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-100">
           <p className="text-xs text-slate-500 text-center sm:text-left">
             Continuous short practices help reinforce smooth vocal pacing.
           </p>
           <Link
-            to={`/exercises/${targetExercise.id}`}
+            to={targetExercise ? `/exercises/${targetExercise.id}` : `/exercises`}
             className="w-full sm:w-auto"
           >
             <Button
-              className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs h-10 px-5 rounded-full shadow-xs gap-2"
+              className="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs h-10 px-5 rounded-xl shadow-xs gap-2"
             >
               <span>Start Recommended Practice</span>
               <ArrowRight className="w-3.5 h-3.5" />

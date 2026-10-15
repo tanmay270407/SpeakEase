@@ -5,6 +5,7 @@ import { Button } from "../ui/Button";
 import { Badge } from "../ui/Badge";
 import { useAuth } from "../../contexts/AuthContext";
 import { reviewService } from "../../services/reviewService";
+import { useWebRTC } from "../../hooks/useWebRTC";
 import {
   Video,
   VideoOff,
@@ -12,17 +13,15 @@ import {
   MicOff,
   PhoneOff,
   Monitor,
-  Volume2,
-  Sparkles,
-  User,
   Clock,
-  Maximize2,
-  Minimize2,
   AlertCircle,
   Activity,
   Star,
   CheckCircle,
   Loader2,
+  RefreshCw,
+  Radio,
+  Sparkles,
 } from "lucide-react";
 
 interface LiveVideoCallModalProps {
@@ -36,17 +35,12 @@ export function LiveVideoCallModal({
   session,
   isOpen,
   onClose,
-  userRole
+  userRole,
 }: LiveVideoCallModalProps) {
   const { profile } = useAuth();
-  const [micOn, setMicOn] = useState(true);
-  const [cameraOn, setCameraOn] = useState(true);
-  const [screenSharing, setScreenSharing] = useState(false);
-  const [mediaError, setMediaError] = useState<string | null>(null);
 
-  // Call duration state
+  // Call timing state
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [callActive, setCallActive] = useState(false);
   const [callEnded, setCallEnded] = useState(false);
 
   // Post-session rating state for patient
@@ -57,192 +51,106 @@ export function LiveVideoCallModal({
   const [submittedReview, setSubmittedReview] = useState<boolean>(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
 
-  // Audio analysis / Visualizer level
-  const [audioLevel, setAudioLevel] = useState(0);
+  // Refs for guarding DB updates
+  const hasUpdatedStartRef = useRef(false);
+  const hasUpdatedEndRef = useRef(false);
 
-  // Video refs
+  // Video element references
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const animFrameRef = useRef<number | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Start media stream on modal open
-  useEffect(() => {
-    if (!isOpen) return;
-
-    let isMounted = true;
-
-    async function startMedia() {
-      try {
-        setMediaError(null);
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true
-        });
-
-        if (!isMounted) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-
-        localStreamRef.current = stream;
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-
-        setCallActive(true);
-
-        // Mark session started in DB if not already started
-        if (!session.actual_started_at) {
+  // Initialize WebRTC hook
+  const {
+    localStream,
+    remoteStream,
+    connectionState,
+    iceConnectionState,
+    micOn,
+    cameraOn,
+    screenSharing,
+    isRemoteCameraOff,
+    isRemoteMicMuted,
+    mediaError,
+    authError,
+    audioLevel,
+    toggleMic,
+    toggleCamera,
+    toggleScreenShare,
+    retryMediaAndConnection,
+    hangUp,
+  } = useWebRTC({
+    sessionId: session.id,
+    userId: profile?.id,
+    userRole,
+    isOpen: isOpen && !callEnded,
+    onConnected: async () => {
+      // Mark session started in DB if not already logged and not already sent
+      if (!session.actual_started_at && !hasUpdatedStartRef.current) {
+        hasUpdatedStartRef.current = true;
+        try {
           await (supabase.from("live_sessions") as any)
             .update({
               actual_started_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
+              updated_at: new Date().toISOString(),
             })
             .eq("id", session.id);
-        }
-
-        // Setup Audio Analyser for voice meter
-        try {
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-          if (AudioContextClass) {
-            const ctx = new AudioContextClass();
-            audioContextRef.current = ctx;
-            const source = ctx.createMediaStreamSource(stream);
-            const analyser = ctx.createAnalyser();
-            analyser.fftSize = 64;
-            source.connect(analyser);
-
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-            const checkAudio = () => {
-              if (!isMounted) return;
-              analyser.getByteFrequencyData(dataArray);
-              let sum = 0;
-              for (let i = 0; i < dataArray.length; i++) {
-                sum += dataArray[i];
-              }
-              const avg = sum / dataArray.length;
-              setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
-              animFrameRef.current = requestAnimationFrame(checkAudio);
-            };
-            checkAudio();
-          }
         } catch (e) {
-          console.warn("Audio analyser initialization notice:", e);
+          console.warn("Error updating session start time:", e);
         }
-      } catch (err: any) {
-        console.error("Camera/mic error:", err);
-        setMediaError(
-          "Could not access camera or microphone. Please check browser permissions."
-        );
       }
-    }
+    },
+  });
 
-    startMedia();
-
-    return () => {
-      isMounted = false;
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (audioContextRef.current) audioContextRef.current.close();
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [isOpen, session.id]);
-
-  // Timer counter
+  // Attach local media stream to local video element
   useEffect(() => {
-    if (!callActive || callEnded) return;
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
+
+  // Attach remote media stream to remote video element
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch((e) => {
+        console.warn("Autoplay notice for remote video:", e);
+      });
+    }
+  }, [remoteStream]);
+
+  // Timer interval running strictly when connectionState === 'connected'
+  useEffect(() => {
+    if (!isOpen || callEnded || connectionState !== "connected") {
+      if (!isOpen || callEnded) {
+        setElapsedSeconds(0);
+      }
+      return;
+    }
     const interval = setInterval(() => {
       setElapsedSeconds((prev) => prev + 1);
     }, 1000);
     return () => clearInterval(interval);
-  }, [callActive, callEnded]);
+  }, [isOpen, callEnded, connectionState]);
 
-  // Toggle Mute Audio
-  const toggleMic = () => {
-    if (localStreamRef.current) {
-      const audioTracks = localStreamRef.current.getAudioTracks();
-      audioTracks.forEach((track) => {
-        track.enabled = !micOn;
-      });
-      setMicOn(!micOn);
-    }
-  };
-
-  // Toggle Camera
-  const toggleCamera = () => {
-    if (localStreamRef.current) {
-      const videoTracks = localStreamRef.current.getVideoTracks();
-      videoTracks.forEach((track) => {
-        track.enabled = !cameraOn;
-      });
-      setCameraOn(!cameraOn);
-    }
-  };
-
-  // Toggle Screen Share
-  const toggleScreenShare = async () => {
-    if (screenSharing) {
-      // Switch back to video camera
-      try {
-        const camStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localStreamRef.current?.getTracks().forEach((t) => t.stop());
-        localStreamRef.current = camStream;
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = camStream;
-        }
-        setScreenSharing(false);
-      } catch (e) {
-        console.error(e);
-      }
-    } else {
-      try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        localStreamRef.current?.getVideoTracks().forEach((t) => t.stop());
-        
-        const audioTrack = localStreamRef.current?.getAudioTracks()[0];
-        if (audioTrack) {
-          screenStream.addTrack(audioTrack);
-        }
-
-        localStreamRef.current = screenStream;
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = screenStream;
-        }
-        setScreenSharing(true);
-
-        screenStream.getVideoTracks()[0].onended = () => {
-          setScreenSharing(false);
-        };
-      } catch (e) {
-        console.error("Screen share canceled or failed:", e);
-      }
-    }
-  };
-
-  // End Call
+  // Handle End Call
   const handleEndCall = async () => {
     try {
-      setCallActive(false);
       setCallEnded(true);
+      await hangUp();
 
-      // Stop stream tracks
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((t) => t.stop());
+      // Guard duplicate DB updates on session completion
+      if (!hasUpdatedEndRef.current) {
+        hasUpdatedEndRef.current = true;
+        const finalDurationMins = Math.max(1, Math.round(elapsedSeconds / 60));
+        await (supabase.from("live_sessions") as any)
+          .update({
+            status: "completed",
+            actual_ended_at: new Date().toISOString(),
+            actual_duration: finalDurationMins,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", session.id);
       }
-
-      // Update DB session as completed
-      const finalDurationMins = Math.max(1, Math.round(elapsedSeconds / 60));
-      await (supabase.from("live_sessions") as any)
-        .update({
-          status: "completed",
-          actual_ended_at: new Date().toISOString(),
-          actual_duration: finalDurationMins,
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", session.id);
 
       if (userRole === "slp") {
         setTimeout(() => {
@@ -255,6 +163,7 @@ export function LiveVideoCallModal({
     }
   };
 
+  // Submit patient SLP review
   const handleReviewSubmit = async () => {
     if (!rating || rating < 1 || rating > 5) {
       setReviewError("Please select a rating from 1 to 5 stars.");
@@ -308,23 +217,46 @@ export function LiveVideoCallModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-5xl h-[85vh] bg-slate-900 rounded-3xl shadow-2xl border border-slate-800 flex flex-col overflow-hidden text-white">
-        
         {/* Top Header Bar */}
         <div className="flex items-center justify-between px-6 py-4 bg-slate-900/80 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
             <div className="relative flex h-3 w-3">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+              {connectionState === "connected" ? (
+                <>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                </>
+              ) : connectionState === "reconnecting" ? (
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+              ) : (
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500 animate-pulse"></span>
+              )}
             </div>
             <div>
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 Live Speech Therapy Session
-                <Badge className="bg-indigo-500/20 text-indigo-300 border-indigo-500/30 text-xs">
-                  {userRole === "slp" ? "Clinician Room" : "Patient Room"}
+                <Badge
+                  className={`text-xs ${
+                    connectionState === "connected"
+                      ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                      : connectionState === "reconnecting"
+                      ? "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                      : "bg-indigo-500/20 text-indigo-300 border-indigo-500/30"
+                  }`}
+                >
+                  {connectionState === "connected"
+                    ? "WebRTC Live"
+                    : connectionState === "reconnecting"
+                    ? "Reconnecting..."
+                    : "Connecting Signaling..."}
                 </Badge>
               </h3>
               <p className="text-xs text-slate-400">
-                Connected with <span className="text-slate-200 font-semibold">{otherPersonName}</span>
+                Connected with{" "}
+                <span className="text-slate-200 font-semibold">
+                  {otherPersonName}
+                </span>{" "}
+                ({userRole === "slp" ? "Patient Room" : "Clinician Room"})
               </p>
             </div>
           </div>
@@ -332,7 +264,11 @@ export function LiveVideoCallModal({
           <div className="flex items-center gap-4">
             {/* Audio Indicator */}
             <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/80 border border-slate-700/60 text-xs">
-              <Activity className={`h-4 w-4 ${audioLevel > 15 ? "text-emerald-400" : "text-slate-500"}`} />
+              <Activity
+                className={`h-4 w-4 ${
+                  audioLevel > 15 ? "text-emerald-400" : "text-slate-500"
+                }`}
+              />
               <div className="w-16 h-1.5 bg-slate-700 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-emerald-500 transition-all duration-75"
@@ -351,19 +287,40 @@ export function LiveVideoCallModal({
 
         {/* Video Canvas Container */}
         <div className="relative flex-1 bg-slate-950 p-4 flex items-center justify-center overflow-hidden">
-          {mediaError && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-6 bg-slate-900/95 text-center space-y-3">
-              <div className="p-3 rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
+          {/* Permission / Authorization Error Overlay */}
+          {(mediaError || authError) && (
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-slate-900/95 text-center space-y-4">
+              <div className="p-3.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
                 <AlertCircle className="h-8 w-8" />
               </div>
-              <p className="text-sm font-semibold text-red-200">{mediaError}</p>
-              <Button
-                variant="outline"
-                className="bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700"
-                onClick={onClose}
-              >
-                Close Session
-              </Button>
+              <div className="max-w-md space-y-1">
+                <h4 className="text-base font-bold text-red-200">
+                  {mediaError
+                    ? "Media Device Error"
+                    : authError?.includes("Unauthorized")
+                    ? "Access Unauthorized"
+                    : "Signaling Connection Error"}
+                </h4>
+                <p className="text-xs text-slate-300">
+                  {authError || mediaError}
+                </p>
+              </div>
+              <div className="flex items-center gap-3 pt-2">
+                <Button
+                  onClick={retryMediaAndConnection}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold h-9 px-4 rounded-xl flex items-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Retry Connection
+                </Button>
+                <Button
+                  variant="outline"
+                  className="bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700 text-xs h-9 px-4 rounded-xl cursor-pointer"
+                  onClick={onClose}
+                >
+                  Close Session
+                </Button>
+              </div>
             </div>
           )}
 
@@ -375,17 +332,26 @@ export function LiveVideoCallModal({
                     <div className="mx-auto w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center">
                       <CheckCircle className="h-6 w-6" />
                     </div>
-                    <h4 className="text-xl font-bold text-white">Thank You for Your Feedback!</h4>
+                    <h4 className="text-xl font-bold text-white">
+                      Thank You for Your Feedback!
+                    </h4>
                     <p className="text-xs text-slate-400">
-                      Your review helps us maintain high quality speech therapy services.
+                      Your review helps us maintain high quality speech therapy
+                      services.
                     </p>
                   </div>
                 ) : (
                   <div className="w-full space-y-5 text-left">
                     <div className="text-center space-y-1">
-                      <h4 className="text-xl font-bold text-white">How was your session with your SLP?</h4>
+                      <h4 className="text-xl font-bold text-white">
+                        How was your session with your SLP?
+                      </h4>
                       <p className="text-xs text-slate-400">
-                        Rate your live therapy session experience with <span className="text-indigo-300 font-semibold">{otherPersonName}</span>.
+                        Rate your live therapy session experience with{" "}
+                        <span className="text-indigo-300 font-semibold">
+                          {otherPersonName}
+                        </span>
+                        .
                       </p>
                     </div>
 
@@ -420,7 +386,7 @@ export function LiveVideoCallModal({
                       </span>
                     </div>
 
-                    {/* Optional Review Text */}
+                    {/* Review Text */}
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-slate-300">
                         Optional Review & Feedback
@@ -474,43 +440,104 @@ export function LiveVideoCallModal({
                 <div className="p-4 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
                   <Sparkles className="h-10 w-10" />
                 </div>
-                <h4 className="text-xl font-bold text-white">Session Completed</h4>
-                <p className="text-sm text-slate-400">Total Duration: {formatTime(elapsedSeconds)}</p>
+                <h4 className="text-xl font-bold text-white">
+                  Session Completed
+                </h4>
+                <p className="text-sm text-slate-400">
+                  Total Duration: {formatTime(elapsedSeconds)}
+                </p>
               </div>
             )
           ) : (
             <div className="relative w-full h-full rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 flex items-center justify-center">
-              {/* Simulated Remote Video Screen */}
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-900/90 to-indigo-950/40 p-6 text-center">
-                <div className="relative mb-4">
-                  <div className="h-28 w-28 rounded-full bg-gradient-to-tr from-indigo-600 to-teal-500 p-1 shadow-xl">
-                    <div className="h-full w-full rounded-full bg-slate-900 flex items-center justify-center text-3xl font-bold text-white">
+              {/* Primary Remote Video / Waiting Canvas */}
+              {remoteStream && !isRemoteCameraOff ? (
+                <div className="relative w-full h-full flex items-center justify-center bg-black">
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full h-full object-cover"
+                  />
+                  {/* Remote Muted Badge Overlay */}
+                  {isRemoteMicMuted && (
+                    <div className="absolute top-4 left-4 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-medium text-amber-300 flex items-center gap-1.5 backdrop-blur-md z-10">
+                      <MicOff className="w-3.5 h-3.5 text-amber-400" />
+                      <span>{otherPersonName} is muted</span>
+                    </div>
+                  )}
+                  <div className="absolute bottom-4 left-4 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-semibold text-slate-200 backdrop-blur-md z-10">
+                    {otherPersonName} ({userRole === "slp" ? "Patient" : "SLP"})
+                  </div>
+                </div>
+              ) : remoteStream && isRemoteCameraOff ? (
+                /* Remote Camera Off Card */
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 p-6 text-center space-y-3">
+                  <div className="relative">
+                    <div className="h-28 w-28 rounded-full bg-gradient-to-tr from-indigo-600 to-teal-500 p-1 shadow-xl">
+                      <div className="h-full w-full rounded-full bg-slate-900 flex items-center justify-center text-3xl font-bold text-white">
+                        {otherPersonName.charAt(0)}
+                      </div>
+                    </div>
+                    <span className="absolute bottom-1 right-1 h-5 w-5 rounded-full bg-amber-500 border-2 border-slate-900" />
+                  </div>
+                  <h4 className="text-lg font-bold text-white">
+                    {otherPersonName}
+                  </h4>
+                  <p className="text-xs text-slate-400 max-w-sm flex items-center justify-center gap-1.5">
+                    <VideoOff className="w-3.5 h-3.5 text-slate-500" />
+                    Participant turned off camera (Audio stream active)
+                  </p>
+                </div>
+              ) : (
+                /* Waiting State Card */
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-900/90 to-indigo-950/40 p-6 text-center space-y-4">
+                  <div className="relative">
+                    <div className="h-28 w-28 rounded-full bg-slate-800/80 border-2 border-indigo-500/30 flex items-center justify-center text-3xl font-bold text-white shadow-xl">
                       {otherPersonName.charAt(0)}
                     </div>
+                    <div className="absolute -inset-2 rounded-full border border-indigo-500/30 animate-ping opacity-30" />
                   </div>
-                  <span className="absolute bottom-1 right-1 h-5 w-5 rounded-full bg-emerald-500 border-2 border-slate-900" />
+                  <div className="space-y-1">
+                    <h4 className="text-lg font-bold text-white flex items-center justify-center gap-2">
+                      Waiting for {otherPersonName}
+                      <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                    </h4>
+                    <p className="text-xs text-slate-400 max-w-sm">
+                      Signaling room active. Connection will establish
+                      automatically when {otherPersonName} enters the session.
+                    </p>
+                  </div>
+                  {session.purpose && (
+                    <div className="px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300 max-w-sm">
+                      <span className="font-semibold text-indigo-300">
+                        Session Goal:
+                      </span>{" "}
+                      {session.purpose}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 text-[11px] text-indigo-300/80 pt-2">
+                    <Radio className="w-3.5 h-3.5 animate-pulse" />
+                    <span>
+                      ICE State:{" "}
+                      <span className="font-mono text-white">
+                        {iceConnectionState}
+                      </span>
+                    </span>
+                  </div>
                 </div>
-                <h4 className="text-lg font-bold text-white">{otherPersonName}</h4>
-                <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                  {userRole === "slp"
-                    ? "Patient speech stream active. Voice metrics and fluencies are monitored."
-                    : "Live audio and video feed active with your speech language pathologist."}
-                </p>
-                {session.purpose && (
-                  <div className="mt-4 px-4 py-2 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300">
-                    <span className="font-semibold text-indigo-300">Session Goal:</span> {session.purpose}
-                  </div>
-                )}
-              </div>
+              )}
 
-              {/* Local Self Camera Feed Overlay */}
-              <div className="absolute bottom-4 right-4 w-44 sm:w-60 aspect-video rounded-2xl overflow-hidden border-2 border-indigo-500/50 shadow-2xl bg-slate-950 z-10">
+              {/* Local Video Stream Overlay */}
+              <div className="absolute bottom-4 right-4 w-44 sm:w-60 aspect-video rounded-2xl overflow-hidden border-2 border-indigo-500/50 shadow-2xl bg-slate-950 z-20">
                 <video
                   ref={localVideoRef}
                   autoPlay
                   playsInline
                   muted
-                  className={`w-full h-full object-cover ${!cameraOn ? "hidden" : ""}`}
+                  className={`w-full h-full object-cover ${
+                    !cameraOn ? "hidden" : ""
+                  }`}
                 />
                 {!cameraOn && (
                   <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-slate-400 text-xs space-y-1">
@@ -518,25 +545,30 @@ export function LiveVideoCallModal({
                     <span>Camera Off</span>
                   </div>
                 )}
-                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-slate-950/80 text-[10px] font-semibold text-slate-200 backdrop-blur-xs">
-                  You ({userRole === "slp" ? "SLP" : "Patient"})
+                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-slate-950/80 text-[10px] font-semibold text-slate-200 backdrop-blur-xs flex items-center gap-1">
+                  {!micOn && <MicOff className="w-2.5 h-2.5 text-red-400" />}
+                  <span>You ({userRole === "slp" ? "SLP" : "Patient"})</span>
                 </div>
               </div>
             </div>
           )}
         </div>
 
-        {/* Bottom Control Bar */}
+        {/* Bottom Controls Bar */}
         <div className="flex items-center justify-between px-6 py-4 bg-slate-900/90 border-t border-slate-800 shrink-0">
           <div className="text-xs text-slate-400 hidden sm:block">
-            Meeting ID: <span className="font-mono text-slate-300">{session.meeting_id || session.id.substring(0, 8)}</span>
+            Meeting ID:{" "}
+            <span className="font-mono text-slate-300">
+              {session.meeting_id || session.id.substring(0, 8)}
+            </span>
           </div>
 
           {/* Action Controls */}
           <div className="flex items-center gap-3 mx-auto sm:mx-0">
-            {/* Mic Button */}
+            {/* Mic Toggle */}
             <button
               onClick={toggleMic}
+              disabled={callEnded}
               className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
                 micOn
                   ? "bg-slate-800 border-slate-700 text-white hover:bg-slate-700"
@@ -547,9 +579,10 @@ export function LiveVideoCallModal({
               {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
             </button>
 
-            {/* Camera Button */}
+            {/* Camera Toggle */}
             <button
               onClick={toggleCamera}
+              disabled={callEnded}
               className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
                 cameraOn
                   ? "bg-slate-800 border-slate-700 text-white hover:bg-slate-700"
@@ -557,12 +590,17 @@ export function LiveVideoCallModal({
               }`}
               title={cameraOn ? "Turn Camera Off" : "Turn Camera On"}
             >
-              {cameraOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+              {cameraOn ? (
+                <Video className="h-5 w-5" />
+              ) : (
+                <VideoOff className="h-5 w-5" />
+              )}
             </button>
 
-            {/* Screen Share Button */}
+            {/* Screen Share Toggle */}
             <button
               onClick={toggleScreenShare}
+              disabled={callEnded}
               className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
                 screenSharing
                   ? "bg-indigo-600 border-indigo-500 text-white"
@@ -576,6 +614,7 @@ export function LiveVideoCallModal({
             {/* End Call Button */}
             <button
               onClick={handleEndCall}
+              disabled={callEnded}
               className="px-5 py-3.5 rounded-2xl bg-red-600 hover:bg-red-700 text-white font-semibold text-sm flex items-center gap-2 transition-all cursor-pointer shadow-lg shadow-red-600/30 ml-2"
             >
               <PhoneOff className="h-5 w-5" />
@@ -584,7 +623,9 @@ export function LiveVideoCallModal({
           </div>
 
           <div className="w-28 hidden md:block text-right">
-            <span className="text-[11px] text-slate-500 font-medium">Encrypted Media</span>
+            <span className="text-[11px] text-slate-500 font-medium">
+              WebRTC Encrypted
+            </span>
           </div>
         </div>
       </div>

@@ -1,8 +1,13 @@
 import { spawnSync } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { transcribeAudioWithGnani } from "./gnaniService";
-import { processTranscriptWithGroq } from "./groqService";
-import { analyzeSpeechWithGemini, GeminiSpeechAnalysisResult } from "./geminiService";
+import { processTranscriptWithGroq, transcribeAudioWithGroqWhisper } from "./groqService";
+import {
+  analyzeSpeechWithGemini,
+  GeminiSpeechAnalysisResult,
+  AreaHistoricalProgress,
+} from "./geminiService";
+import { analyzeAudioAcoustics } from "./acousticAudioAnalyzer";
 
 export interface SpeechAnalysisPipelineInput {
   sessionId: string;
@@ -128,7 +133,13 @@ Analyze the audio and return valid JSON:
   "prolongations": <count of elongated vowel/consonant sounds>
 }`;
 
-  for (const model of ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-3.5-transcribe", "gemini-3.1-flash-lite"]) {
+  for (const model of [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-transcribe",
+    "gemini-3.8-flash",
+    "gemini-flash-latest",
+    "gemini-2.5-flash",
+  ]) {
     try {
       const response = await ai.models.generateContent({
         model,
@@ -250,7 +261,7 @@ export async function runSpeechAnalysisPipeline({
 
   if (authoritativeDuration <= 0) authoritativeDuration = 1;
 
-  // STAGE 2: VOICE-TO-TEXT (GNANI.AI PRIMARY)
+  // STAGE 2: VOICE-TO-TEXT (GNANI.AI PRIMARY -> GROQ WHISPER -> GEMINI FALLBACK)
   let transcript = "";
   let transcriptionProvider = "gnani";
   let fallbackAcoustics: any = null;
@@ -260,35 +271,71 @@ export async function runSpeechAnalysisPipeline({
     transcript = gnaniResult.transcript;
     transcriptionProvider = "gnani";
   } else {
-    // Graceful fallback to Gemini speech transcription
-    console.log(`[transcription_notice] Engaging resilient Gemini acoustic transcriber for session ${sessionId}`);
-    fallbackAcoustics = await fallbackGeminiTranscription(audioBuffer, mimeType);
-    transcript = fallbackAcoustics?.transcript || "";
-    transcriptionProvider = "gemini-fallback";
+    // Try Groq Whisper (high-speed transcription)
+    const groqWhisperResult = await transcribeAudioWithGroqWhisper(audioBuffer, mimeType);
+    if (groqWhisperResult && groqWhisperResult.transcript) {
+      transcript = groqWhisperResult.transcript;
+      transcriptionProvider = "groq-whisper";
+      fallbackAcoustics = {
+        speechRate: groqWhisperResult.speechRate,
+      };
+    } else {
+      // Graceful fallback to Gemini speech transcription
+      console.log(`[transcription_notice] Engaging resilient Gemini acoustic transcriber for session ${sessionId}`);
+      fallbackAcoustics = await fallbackGeminiTranscription(audioBuffer, mimeType);
+      transcript = fallbackAcoustics?.transcript || "";
+      transcriptionProvider = "gemini-fallback";
+    }
   }
 
+  // Fetch reading passage text if assigned exercise
+  let targetPassageText: string | null = null;
+  let exerciseTitle: string | null = null;
+  if (sessionInfo.exercise_id) {
+    try {
+      const { data: exData } = await supabase
+        .from("exercises")
+        .select("name, plain_practice_text")
+        .eq("id", sessionInfo.exercise_id)
+        .maybeSingle();
+      if (exData) {
+        if (exData.name) exerciseTitle = exData.name;
+        if (exData.plain_practice_text) targetPassageText = exData.plain_practice_text;
+      }
+    } catch (exErr: any) {
+      console.warn("Could not fetch exercise info:", exErr.message);
+    }
+  }
+
+  // STAGE 2.5: DEEP ACOUSTIC SIGNAL ANALYSIS (VAD, PCM Frames, Silence, Prolongation, Repetition Events)
+  const acousticResult = analyzeAudioAcoustics({
+    audioBuffer,
+    transcript,
+    targetPassageText,
+    fallbackDurationSec: authoritativeDuration,
+  });
+
   // Calculate Speech Rate & Acoustic Indicators
-  const wordCount = transcript.split(/\s+/).filter(Boolean).length;
-  let calculatedWpm = fallbackAcoustics?.speechRate || 0;
-  if (!calculatedWpm || calculatedWpm <= 0) {
-    const minutes = authoritativeDuration / 60;
-    calculatedWpm = minutes > 0 ? Math.round(wordCount / minutes) : 0;
-  }
-  if (calculatedWpm === 0 && wordCount > 0) {
-    calculatedWpm = Math.min(140, Math.max(60, wordCount * 12));
-  }
+  const wordCount = acousticResult.wordCount;
+  const calculatedWpm = acousticResult.activeWpm || acousticResult.overallWpm;
 
   // STAGE 3: FAST PROCESSING LAYER (GROQ)
   let groqResult = await processTranscriptWithGroq(transcript, {
-    repetitions: fallbackAcoustics?.repetitions || 0,
-    pauses: fallbackAcoustics?.pauses || 0,
+    repetitions: acousticResult.repetitionsCount,
+    pauses: acousticResult.pausesCount,
     speech_rate: calculatedWpm,
   });
 
   const processingModel = groqResult?.provider === "groq" ? "groq/llama-3.3-70b" : "fast-parser";
 
-  // STAGE 4: HISTORICAL PATIENT CONTEXT
+  // STAGE 4: HISTORICAL PATIENT CONTEXT & TREND COMPARISON
   let priorContext = "Baseline practice session (no prior recorded session).";
+  let historicalData: AreaHistoricalProgress = {
+    hasHistory: false,
+    sessionCount: 0,
+    explanation: "Baseline practice session. Complete more practice sessions to view your progress trends over time.",
+  };
+
   try {
     const { data: priorSessions } = await supabase
       .from("sessions")
@@ -296,17 +343,52 @@ export async function runSpeechAnalysisPipeline({
       .eq("user_id", user.id)
       .neq("id", sessionId)
       .order("created_at", { ascending: false })
-      .limit(1);
+      .limit(5);
 
     if (priorSessions && priorSessions.length > 0) {
-      const { data: pMetrics } = await supabase
+      const priorSessionIds = priorSessions.map((s: any) => s.id);
+      const { data: priorMetricsList } = await supabase
         .from("speech_metrics")
-        .select("repetitions, pauses, prolongations, speech_rate, created_at")
-        .eq("session_id", priorSessions[0].id)
-        .maybeSingle();
+        .select("session_id, repetitions, pauses, prolongations, speech_rate, created_at")
+        .in("session_id", priorSessionIds);
 
-      if (pMetrics) {
-        priorContext = `Prior session on ${new Date(pMetrics.created_at).toLocaleDateString()}: Speech rate ${pMetrics.speech_rate || 0} wpm, repetitions ${pMetrics.repetitions ?? 0}, pauses ${pMetrics.pauses ?? 0}.`;
+      const metricsMap = new Map((priorMetricsList || []).map((m: any) => [m.session_id, m]));
+      const formattedPrevious: Array<{
+        id: string;
+        date: string;
+        wpm: number;
+        repetitions: number;
+        pauses: number;
+        durationSec: number;
+      }> = [];
+
+      priorSessions.forEach((s: any) => {
+        const m = metricsMap.get(s.id) as any;
+        if (m) {
+          formattedPrevious.push({
+            id: s.id,
+            date: new Date(s.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+            wpm: Number(m.speech_rate) || 0,
+            repetitions: Number(m.repetitions) || 0,
+            pauses: Number(m.pauses) || 0,
+            durationSec: Number(s.duration) || 0,
+          });
+        }
+      });
+
+      if (formattedPrevious.length > 0) {
+        const lastSession = formattedPrevious[0];
+        const rateDiff = calculatedWpm - lastSession.wpm;
+        const rateDiffStr = rateDiff > 0 ? `+${rateDiff} WPM` : `${rateDiff} WPM`;
+
+        priorContext = `Prior session on ${lastSession.date}: Speech rate ${lastSession.wpm} WPM, repetitions ${lastSession.repetitions}, pauses ${lastSession.pauses}.`;
+        historicalData = {
+          hasHistory: true,
+          sessionCount: formattedPrevious.length,
+          rateChangeWpm: rateDiff,
+          explanation: `Your speaking rate changed from ${lastSession.wpm} WPM in your previous session on ${lastSession.date} to ${calculatedWpm} WPM today (${rateDiffStr}). Review both recordings to compare your pacing.`,
+          previousSessions: formattedPrevious,
+        };
       }
     }
   } catch (priorErr: any) {
@@ -315,25 +397,16 @@ export async function runSpeechAnalysisPipeline({
 
   // Consolidate metrics
   const finalMetrics = {
-    repetitions: normalizeCount(fallbackAcoustics?.repetitions ?? groqResult?.possible_repetition_mentions ?? 0),
-    pauses: normalizeCount(fallbackAcoustics?.pauses ?? groqResult?.pause_mentions ?? 0),
-    prolongations: normalizeCount(fallbackAcoustics?.prolongations ?? 0),
-    speech_rate: normalizeCount(calculatedWpm),
+    repetitions: acousticResult.repetitionsCount,
+    pauses: acousticResult.pausesCount,
+    prolongations: acousticResult.prolongationsCount,
+    blocks: acousticResult.blocksCount,
+    speech_rate: calculatedWpm,
   };
 
   const practiceLevelResult = calculatePracticeLevel(finalMetrics);
 
   // STAGE 5: DEEP REASONING & PERSONALIZED RECOMMENDATIONS (GEMINI)
-  let exerciseTitle: string | null = null;
-  if (sessionInfo.exercise_id) {
-    try {
-      const { data: exData } = await supabase.from("exercises").select("name").eq("id", sessionInfo.exercise_id).maybeSingle();
-      if (exData?.name) exerciseTitle = exData.name;
-    } catch (exErr: any) {
-      console.warn("Could not fetch exercise title:", exErr.message);
-    }
-  }
-
   const geminiResult: GeminiSpeechAnalysisResult = await analyzeSpeechWithGemini({
     transcript,
     groqOutput: groqResult,
@@ -342,9 +415,12 @@ export async function runSpeechAnalysisPipeline({
     repetitions: finalMetrics.repetitions,
     pauses: finalMetrics.pauses,
     prolongations: finalMetrics.prolongations,
+    blocks: finalMetrics.blocks,
     practiceLevel: practiceLevelResult.level,
     priorContext,
+    historicalData,
     exerciseTitle,
+    acousticEvents: acousticResult.events,
   });
 
   const observationText = geminiResult.slpSummary || geminiResult.sessionSummary;
@@ -365,6 +441,21 @@ export async function runSpeechAnalysisPipeline({
     aiModel: geminiResult.modelUsed,
     processingModel,
     transcriptionProvider,
+
+    // Deep Unified Acoustic Analysis Data (8-Parameters)
+    acousticAnalysis: acousticResult,
+    events: acousticResult.events,
+    pauseDetails: acousticResult.pauseDetails,
+
+    // Area-Specific Structures
+    repetitions: geminiResult.repetitions,
+    prolongations: geminiResult.prolongations,
+    blocks: geminiResult.blocks,
+    speechRate: geminiResult.speechRate,
+    pauses: geminiResult.pauses,
+    breathAndPhrasing: geminiResult.breathAndPhrasing,
+    historicalProgress: geminiResult.historicalProgress,
+    transcript,
   };
 
   if (pool) {
@@ -394,21 +485,75 @@ export async function runSpeechAnalysisPipeline({
     // Upsert ai_observations
     try {
       await pool.query(
-        `INSERT INTO ai_observations (session_id, observation, observation_text, created_at)
-         VALUES ($1, $2, $3, NOW())
+        `INSERT INTO ai_observations (
+           session_id, observation, observation_text, transcript, ai_analysis,
+           practice_focus, recommended_exercise, recommended_duration, patient_feedback,
+           slp_summary, recommendation_reason, ai_model, processing_model,
+           transcription_provider, ai_confidence, created_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
          ON CONFLICT (session_id) DO UPDATE SET 
            observation = EXCLUDED.observation,
            observation_text = EXCLUDED.observation_text,
+           transcript = EXCLUDED.transcript,
+           ai_analysis = EXCLUDED.ai_analysis,
+           practice_focus = EXCLUDED.practice_focus,
+           recommended_exercise = EXCLUDED.recommended_exercise,
+           recommended_duration = EXCLUDED.recommended_duration,
+           patient_feedback = EXCLUDED.patient_feedback,
+           slp_summary = EXCLUDED.slp_summary,
+           recommendation_reason = EXCLUDED.recommendation_reason,
+           ai_model = EXCLUDED.ai_model,
+           processing_model = EXCLUDED.processing_model,
+           transcription_provider = EXCLUDED.transcription_provider,
+           ai_confidence = EXCLUDED.ai_confidence,
            created_at = NOW()`,
-        [sessionId, observationText, observationText]
+        [
+          sessionId,
+          observationText,
+          observationText,
+          transcript,
+          JSON.stringify(aiAnalysisPayload),
+          geminiResult.practiceFocus,
+          geminiResult.recommendedExercise,
+          geminiResult.recommendedDurationMinutes,
+          geminiResult.patientFeedback,
+          geminiResult.slpSummary,
+          geminiResult.recommendationReason,
+          geminiResult.modelUsed,
+          processingModel,
+          transcriptionProvider,
+          geminiResult.confidence,
+        ]
       );
     } catch (obsErr: any) {
       console.warn("ai_observations fallback:", obsErr.message);
       await pool.query("DELETE FROM ai_observations WHERE session_id = $1", [sessionId]);
       await pool.query(
-        `INSERT INTO ai_observations (session_id, observation, observation_text, created_at)
-         VALUES ($1, $2, $3, NOW())`,
-        [sessionId, observationText, observationText]
+        `INSERT INTO ai_observations (
+           session_id, observation, observation_text, transcript, ai_analysis,
+           practice_focus, recommended_exercise, recommended_duration, patient_feedback,
+           slp_summary, recommendation_reason, ai_model, processing_model,
+           transcription_provider, ai_confidence, created_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())`,
+        [
+          sessionId,
+          observationText,
+          observationText,
+          transcript,
+          JSON.stringify(aiAnalysisPayload),
+          geminiResult.practiceFocus,
+          geminiResult.recommendedExercise,
+          geminiResult.recommendedDurationMinutes,
+          geminiResult.patientFeedback,
+          geminiResult.slpSummary,
+          geminiResult.recommendationReason,
+          geminiResult.modelUsed,
+          processingModel,
+          transcriptionProvider,
+          geminiResult.confidence,
+        ]
       );
     }
 
@@ -419,9 +564,23 @@ export async function runSpeechAnalysisPipeline({
            analysis_status = 'completed', 
            practice_level = $1,
            analyzed_at = NOW(),
-           duration = COALESCE($2, duration)
-       WHERE id = $3`,
-      [practiceLevelResult.level, authoritativeDuration, sessionId]
+           duration = COALESCE($2, duration),
+           transcript = $3,
+           ai_analysis = $4,
+           practice_focus = $5,
+           recommended_exercise = $6,
+           recommended_duration = $7
+       WHERE id = $8`,
+      [
+        practiceLevelResult.level,
+        authoritativeDuration,
+        transcript,
+        JSON.stringify(aiAnalysisPayload),
+        geminiResult.practiceFocus,
+        geminiResult.recommendedExercise,
+        geminiResult.recommendedDurationMinutes,
+        sessionId,
+      ]
     );
 
     // Sync to corsair_entities & audit_logs
@@ -478,6 +637,18 @@ export async function runSpeechAnalysisPipeline({
       session_id: sessionId,
       observation: observationText,
       observation_text: observationText,
+      transcript,
+      ai_analysis: aiAnalysisPayload,
+      practice_focus: geminiResult.practiceFocus,
+      recommended_exercise: geminiResult.recommendedExercise,
+      recommended_duration: geminiResult.recommendedDurationMinutes,
+      patient_feedback: geminiResult.patientFeedback,
+      slp_summary: geminiResult.slpSummary,
+      recommendation_reason: geminiResult.recommendationReason,
+      ai_model: geminiResult.modelUsed,
+      processing_model: processingModel,
+      transcription_provider: transcriptionProvider,
+      ai_confidence: geminiResult.confidence,
     }, { onConflict: "session_id" });
 
     await supabase.from("sessions").update({
@@ -486,6 +657,11 @@ export async function runSpeechAnalysisPipeline({
       practice_level: practiceLevelResult.level,
       analyzed_at: new Date().toISOString(),
       duration: authoritativeDuration,
+      transcript,
+      ai_analysis: aiAnalysisPayload,
+      practice_focus: geminiResult.practiceFocus,
+      recommended_exercise: geminiResult.recommendedExercise,
+      recommended_duration: geminiResult.recommendedDurationMinutes,
     }).eq("id", sessionId);
   }
 

@@ -258,14 +258,14 @@ export function SLPDashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
+        <Card className="border-slate-200 shadow-sm overflow-hidden flex flex-col h-[380px] sm:h-[400px]">
+          <CardHeader className="shrink-0 border-b border-slate-100 py-4 px-6 bg-slate-50/50">
             <CardTitle className="text-lg">Needs Review</CardTitle>
             <CardDescription>Sessions awaiting your clinical observation.</CardDescription>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="p-0 flex-1 overflow-y-auto min-h-0 divide-y divide-slate-100 overscroll-contain">
             {needsReviewSessions.length === 0 ? (
-              <div className="p-8 text-center text-sm text-slate-500 italic">
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center text-sm text-slate-500 italic">
                 All caught up! No sessions pending review.
               </div>
             ) : (
@@ -301,7 +301,7 @@ export function SLPDashboard() {
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 shrink-0">
                       <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 font-normal text-xs">Needs Review</Badge>
                       <ChevronRight className="w-4 h-4 text-slate-400" />
                     </div>
@@ -313,19 +313,19 @@ export function SLPDashboard() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
+        <Card className="border-slate-200 shadow-sm overflow-hidden flex flex-col h-[380px] sm:h-[400px]">
+          <CardHeader className="shrink-0 border-b border-slate-100 py-4 px-6 bg-slate-50/50">
             <CardTitle className="text-lg">Recent Sessions</CardTitle>
             <CardDescription>Latest patient activity.</CardDescription>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="p-0 flex-1 overflow-y-auto min-h-0 divide-y divide-slate-100 overscroll-contain">
             {recentSessions.length === 0 ? (
-              <div className="p-8 text-center text-sm text-slate-500 italic">
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center text-sm text-slate-500 italic">
                 No recent sessions found.
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
-                {recentSessions.slice(0, 5).map((session) => {
+                {recentSessions.map((session) => {
                   const exerciseTitle = session.exercises?.name || (session.exercise_id ? getExerciseDetailsById(session.exercise_id)?.title || 'Exercise Routine' : 'Practice Session');
                   return (
                   <Link 
@@ -356,7 +356,7 @@ export function SLPDashboard() {
                         </div>
                       </div>
                     </div>
-                    <ChevronRight className="w-4 h-4 text-slate-400" />
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
                   </Link>
                   );
                 })}
@@ -365,14 +365,14 @@ export function SLPDashboard() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
+        <Card className="border-slate-200 shadow-sm overflow-hidden flex flex-col h-[380px] sm:h-[400px]">
+          <CardHeader className="shrink-0 border-b border-slate-100 py-4 px-6 bg-slate-50/50">
             <CardTitle className="text-lg">Inactive Patients</CardTitle>
             <CardDescription>Patients with no sessions in 7 days.</CardDescription>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="p-0 flex-1 overflow-y-auto min-h-0 divide-y divide-slate-100 overscroll-contain">
             {inactivePatients.length === 0 ? (
-              <div className="p-8 text-center text-sm text-slate-500 italic">
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center text-sm text-slate-500 italic">
                 All patients are active.
               </div>
             ) : (
@@ -394,19 +394,19 @@ export function SLPDashboard() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
+        <Card className="border-slate-200 shadow-sm overflow-hidden flex flex-col h-[380px] sm:h-[400px]">
+          <CardHeader className="shrink-0 border-b border-slate-100 py-4 px-6 bg-slate-50/50">
             <CardTitle className="text-lg">Recent Speech Metrics</CardTitle>
             <CardDescription>Metrics from latest sessions.</CardDescription>
           </CardHeader>
-          <CardContent className="p-0">
+          <CardContent className="p-0 flex-1 overflow-y-auto min-h-0 divide-y divide-slate-100 overscroll-contain">
             {speechMetrics.length === 0 ? (
-              <div className="p-8 text-center text-sm text-slate-500 italic">
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center text-sm text-slate-500 italic">
                 No metrics found.
               </div>
             ) : (
               <div className="divide-y divide-slate-100">
-                {speechMetrics.slice(0, 5).map((metric) => (
+                {speechMetrics.map((metric) => (
                   <div key={metric.id} className="p-4 space-y-2">
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Fluency</span>
