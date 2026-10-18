@@ -151,7 +151,7 @@ export function DemoRoleSelectPage() {
       {/* Footer Info */}
       <div className="max-w-xl mx-auto w-full mt-10 pt-6 border-t border-slate-200 text-center space-y-3">
         <p className="text-xs text-slate-500">
-          Demo Presentation Account: <span className="font-semibold text-slate-700">admin@gmail.com</span>
+          Demo role switching is available to administrator accounts.
         </p>
         <div className="flex items-center justify-center gap-4 text-xs">
           <Link

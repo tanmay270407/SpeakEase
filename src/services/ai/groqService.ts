@@ -21,8 +21,17 @@ export async function transcribeAudioWithGroqWhisper(
   console.log(`[groq_whisper_started] Groq Whisper-large-v3-turbo STT initiated (${audioBuffer.length} bytes)`);
   try {
     const effectiveMime = mimeType ? mimeType.split(";")[0].trim() : "audio/webm";
+    const audioExtension = effectiveMime.includes("wav")
+      ? "wav"
+      : effectiveMime.includes("mpeg") || effectiveMime.includes("mp3")
+        ? "mp3"
+        : effectiveMime.includes("mp4") || effectiveMime.includes("m4a")
+          ? "m4a"
+          : effectiveMime.includes("ogg")
+            ? "ogg"
+            : "webm";
     const formData = new FormData();
-    formData.append("file", new Blob([audioBuffer], { type: effectiveMime }), "recording.webm");
+    formData.append("file", new Blob([audioBuffer], { type: effectiveMime }), `recording.${audioExtension}`);
     formData.append("model", "whisper-large-v3-turbo");
     formData.append("response_format", "verbose_json");
 
