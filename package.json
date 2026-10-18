@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "render-build": "npm install && npm run build",
     "clean": "rm -rf dist",
+    "test": "tsx --test tests/evaluation.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

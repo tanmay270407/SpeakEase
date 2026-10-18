@@ -1,352 +1,398 @@
 /**
- * SpeakEase ML Evaluation Engine: Hugging Face DisfluencySpeech Evaluator
- * 
- * Dataset: amaai-lab/DisfluencySpeech
- * License: Apache-2.0
- * Paper: "DisfluencySpeech -- Single-Speaker Conversational Speech Dataset with Paralanguage" (arXiv:2406.08820)
- * 
- * SAFETY & ISOLATION NOTICE:
- * This module is STRICTLY for offline development and evaluation benchmarking.
- * Under NO circumstances are evaluation samples or research labels inserted into
- * clinical patient session tables, patient progress tracking, or patient-facing diagnostic flows.
+ * Development-only evaluation against the public DisfluencySpeech validation split.
+ * Research samples and labels are never written to clinical records.
  */
 
-import { transcribeAudioWithGroqWhisper, processTranscriptWithGroq } from "../ai/groqService";
-import { analyzeAudioAcoustics } from "../ai/acousticAudioAnalyzer";
+import { transcribeAudioWithGroqWhisper } from "../ai/groqService";
 import { fallbackGeminiTranscription } from "../ai/speechAnalysisPipeline";
-
-import {
+import type {
   DatasetInfo,
-  DISFLUENCY_SPEECH_METADATA,
-  ParsedGroundTruthDisfluencies,
+  DetectedDisfluency,
   DisfluencySample,
-  SampleEvaluationResult,
   EvaluationReport,
+  ParsedGroundTruthDisfluencies,
+  SampleEvaluationResult,
 } from "../../types/evaluation";
+import { DISFLUENCY_SPEECH_METADATA } from "../../types/evaluation";
 
 export { DISFLUENCY_SPEECH_METADATA };
 export type {
   DatasetInfo,
-  ParsedGroundTruthDisfluencies,
+  DetectedDisfluency,
   DisfluencySample,
-  SampleEvaluationResult,
   EvaluationReport,
+  ParsedGroundTruthDisfluencies,
+  SampleEvaluationResult,
 };
 
-/**
- * Robust Levenshtein distance on tokenized words for Word Error Rate (WER)
- */
+type EditOperation = "match" | "substitution" | "deletion" | "insertion";
+
 export function calculateWER(reference: string, hypothesis: string): {
-  wer: number;
+  wer: number | null;
   substitutions: number;
   deletions: number;
   insertions: number;
   refCount: number;
 } {
-  const cleanTokens = (str: string) =>
-    str
+  const tokenize = (text: string) =>
+    text
       .toLowerCase()
-      .replace(/[^\w\s']/g, " ")
+      .replace(/[’]/g, "'")
+      .replace(/[^\p{L}\p{N}'\s]/gu, " ")
       .split(/\s+/)
       .filter(Boolean);
 
-  const ref = cleanTokens(reference);
-  const hyp = cleanTokens(hypothesis);
+  const ref = tokenize(reference);
+  const hyp = tokenize(hypothesis);
+  const costs = Array.from({ length: ref.length + 1 }, () =>
+    new Array<number>(hyp.length + 1).fill(0),
+  );
+  const operations: EditOperation[][] = Array.from({ length: ref.length + 1 }, () =>
+    new Array<EditOperation>(hyp.length + 1).fill("match"),
+  );
 
-  const rLen = ref.length;
-  const hLen = hyp.length;
-
-  if (rLen === 0) {
-    return {
-      wer: hLen === 0 ? 0 : 1,
-      substitutions: 0,
-      deletions: 0,
-      insertions: hLen,
-      refCount: 0,
-    };
+  for (let i = 1; i <= ref.length; i++) {
+    costs[i][0] = i;
+    operations[i][0] = "deletion";
+  }
+  for (let j = 1; j <= hyp.length; j++) {
+    costs[0][j] = j;
+    operations[0][j] = "insertion";
   }
 
-  const dp: number[][] = Array.from({ length: rLen + 1 }, () => new Array(hLen + 1).fill(0));
-
-  for (let i = 0; i <= rLen; i++) dp[i][0] = i;
-  for (let j = 0; j <= hLen; j++) dp[0][j] = j;
-
-  for (let i = 1; i <= rLen; i++) {
-    for (let j = 1; j <= hLen; j++) {
+  for (let i = 1; i <= ref.length; i++) {
+    for (let j = 1; j <= hyp.length; j++) {
       if (ref[i - 1] === hyp[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
-      } else {
-        dp[i][j] = Math.min(
-          dp[i - 1][j - 1] + 1, // substitution
-          dp[i - 1][j] + 1,     // deletion
-          dp[i][j - 1] + 1      // insertion
-        );
+        costs[i][j] = costs[i - 1][j - 1];
+        operations[i][j] = "match";
+        continue;
       }
+
+      const substitutionCost = costs[i - 1][j - 1] + 1;
+      const deletionCost = costs[i - 1][j] + 1;
+      const insertionCost = costs[i][j - 1] + 1;
+      const minimumCost = Math.min(substitutionCost, deletionCost, insertionCost);
+      costs[i][j] = minimumCost;
+      operations[i][j] =
+        minimumCost === substitutionCost
+          ? "substitution"
+          : minimumCost === deletionCost
+            ? "deletion"
+            : "insertion";
     }
   }
 
-  const distance = dp[rLen][hLen];
-  const wer = Math.min(1.0, distance / rLen);
+  let substitutions = 0;
+  let deletions = 0;
+  let insertions = 0;
+  let i = ref.length;
+  let j = hyp.length;
+  while (i > 0 || j > 0) {
+    const operation = operations[i][j];
+    if (operation === "match" || operation === "substitution") {
+      if (operation === "substitution") substitutions++;
+      i--;
+      j--;
+    } else if (operation === "deletion") {
+      deletions++;
+      i--;
+    } else {
+      insertions++;
+      j--;
+    }
+  }
 
-  return {
-    wer: Number(wer.toFixed(4)),
-    substitutions: 0,
-    deletions: 0,
-    insertions: 0,
-    refCount: rLen,
-  };
+  const refCount = ref.length;
+  const wer = refCount === 0
+    ? null
+    : Number(((substitutions + deletions + insertions) / refCount).toFixed(4));
+
+  return { wer, substitutions, deletions, insertions, refCount };
 }
 
-/**
- * Parse structured disfluency annotations from Switchboard transcript_annotated
- */
+function cleanAnnotationText(text: string): string {
+  let cleaned = text.replace(/\{[A-Z]\s*([^}]*)\}/gi, "$1").replace(/<([^>]+)>/g, "$1");
+  while (/\[[^\[\]]*\]/.test(cleaned)) {
+    cleaned = cleaned.replace(/\[([^\[\]]*)\]/g, "$1");
+  }
+  return cleaned.replace(/\[\]|\+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export function parseDisfluencyAnnotations(annotated: string): ParsedGroundTruthDisfluencies {
-  const filledPauses = (annotated.match(/\{F\s+[^}]+\}/gi) || []).map((m) =>
-    m.replace(/^\{F\s*|\s*\}$/gi, "").trim()
-  );
-  const discourseMarkers = (annotated.match(/\{D\s+[^}]+\}/gi) || []).map((m) =>
-    m.replace(/^\{D\s*|\s*\}$/gi, "").trim()
-  );
-  const restarts = (annotated.match(/\[[^\]]+\]/g) || []).map((m) => {
-    const inner = m.slice(1, -1);
-    const parts = inner.split("+").map((p) => p.trim());
-    return {
-      raw: m,
-      reparandum: parts[0] || "",
-      repair: parts[1] || "",
-    };
-  });
-  const nonSpeechEvents = (annotated.match(/<[^>]+>/g) || []).map((m) => m.slice(1, -1).trim());
+  const filledPauses = Array.from(annotated.matchAll(/\{F\s+([^}]+)\}/gi), ([, value]) =>
+    cleanAnnotationText(value),
+  ).filter(Boolean);
+  const discourseMarkers = Array.from(annotated.matchAll(/\{D\s+([^}]+)\}/gi), ([, value]) =>
+    cleanAnnotationText(value),
+  ).filter(Boolean);
+  const coordinatingConjunctions = Array.from(
+    annotated.matchAll(/\{C\s+([^}]+)\}/gi),
+    ([, value]) => cleanAnnotationText(value),
+  ).filter(Boolean);
+  const nonSpeechEvents = Array.from(annotated.matchAll(/<([^>]+)>/g), ([, value]) =>
+    value.trim(),
+  ).filter(Boolean);
+
+  const restarts: ParsedGroundTruthDisfluencies["restarts"] = [];
+  const stack: Array<{ start: number; separator: number | null }> = [];
+  for (let index = 0; index < annotated.length; index++) {
+    const character = annotated[index];
+    if (character === "[") {
+      stack.push({ start: index, separator: null });
+    } else if (character === "+" && stack.length > 0 && stack[stack.length - 1].separator === null) {
+      stack[stack.length - 1].separator = index;
+    } else if (character === "]" && stack.length > 0) {
+      const group = stack.pop()!;
+      if (group.separator !== null) {
+        const reparandum = cleanAnnotationText(annotated.slice(group.start + 1, group.separator));
+        const repair = cleanAnnotationText(annotated.slice(group.separator + 1, index));
+        restarts.push({
+          raw: annotated.slice(group.start, index + 1),
+          reparandum,
+          repair,
+        });
+      }
+    }
+  }
 
   return {
     filledPauses,
     discourseMarkers,
+    coordinatingConjunctions,
     restarts,
     nonSpeechEvents,
-    totalCount: filledPauses.length + discourseMarkers.length + restarts.length + nonSpeechEvents.length,
+    totalCount:
+      filledPauses.length + discourseMarkers.length + restarts.length + nonSpeechEvents.length,
   };
 }
 
-/**
- * Curated offline reference samples from validation split for instant determinism
- */
-export const EMBEDDED_VALIDATION_SAMPLES: DisfluencySample[] = [
-  {
-    id: "disfluency-sample-001",
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requiredTranscript(row: Record<string, unknown>, field: string, rowIndex: number): string {
+  const value = row[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Hugging Face validation row ${rowIndex} is missing required ${field} ground truth.`);
+  }
+  return value;
+}
+
+function parseAudioField(value: unknown, rowIndex: number): { url: string; contentType: string } {
+  const audioItem = Array.isArray(value) ? value[0] : value;
+  if (!isRecord(audioItem) || typeof audioItem.src !== "string") {
+    throw new Error(`Hugging Face validation row ${rowIndex} has an unsupported audio field.`);
+  }
+
+  let url: URL;
+  try {
+    url = new URL(audioItem.src);
+  } catch {
+    throw new Error(`Hugging Face validation row ${rowIndex} has an invalid audio URL.`);
+  }
+  if (url.protocol !== "https:" || url.hostname !== "datasets-server.huggingface.co") {
+    throw new Error(`Hugging Face validation row ${rowIndex} has an untrusted audio URL.`);
+  }
+
+  return {
+    url: url.toString(),
+    contentType: typeof audioItem.type === "string" ? audioItem.type : "audio/wav",
+  };
+}
+
+export async function fetchLiveValidationSamples(limit = 5): Promise<DisfluencySample[]> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 10) {
+    throw new Error("Sample limit must be an integer between 1 and 10.");
+  }
+
+  const url = new URL("https://datasets-server.huggingface.co/rows");
+  url.search = new URLSearchParams({
+    dataset: "amaai-lab/DisfluencySpeech",
+    config: "default",
     split: "validation",
-    transcript_annotated:
-      "{D You know, } it's someone who had, {F uh, } killed two teenage boys here in San Diego as a matter of fact.",
-    transcript_a:
-      "You know, it's someone who had, uh, killed two teenage boys here in San Diego as a matter of fact.",
-    transcript_b:
-      "it's someone who had, killed two teenage boys here in San Diego as a matter of fact.",
-    transcript_c:
-      "it's someone who had, killed two teenage boys here in San Diego as a matter of fact.",
-    groundTruth: parseDisfluencyAnnotations(
-      "{D You know, } it's someone who had, {F uh, } killed two teenage boys here in San Diego as a matter of fact."
-    ),
-  },
-  {
-    id: "disfluency-sample-002",
-    split: "validation",
-    transcript_annotated:
-      "{F Uh, } I was listening to something on the radio about, {F uh, } {D you know, } a talk show about sports books, [ {C and } they, + {C and } they ] mentioned that one.",
-    transcript_a:
-      "Uh, I was listening to something on the radio about, uh, you know, a talk show about sports books, and they, and they mentioned that one.",
-    transcript_b:
-      "I was listening to something on the radio about, a talk show about sports books, and they, and they mentioned that one.",
-    transcript_c:
-      "I was listening to something on the radio about, a talk show about sports books, and they mentioned that one.",
-    groundTruth: parseDisfluencyAnnotations(
-      "{F Uh, } I was listening to something on the radio about, {F uh, } {D you know, } a talk show about sports books, [ {C and } they, + {C and } they ] mentioned that one."
-    ),
-  },
-  {
-    id: "disfluency-sample-003",
-    split: "validation",
-    transcript_annotated:
-      "<Laughter> Yeah, we'd like to get him a friend {C but } {F um, } {F uh, } we haven't found one yet. {C So } how about you, do you have any pets?",
-    transcript_a:
-      "Yeah, we'd like to get him a friend but um, uh, we haven't found one yet. So how about you, do you have any pets?",
-    transcript_b:
-      "Yeah, we'd like to get him a friend but we haven't found one yet. So how about you, do you have any pets?",
-    transcript_c:
-      "Yeah, we'd like to get him a friend but we haven't found one yet. So how about you, do you have any pets?",
-    groundTruth: parseDisfluencyAnnotations(
-      "<Laughter> Yeah, we'd like to get him a friend {C but } {F um, } {F uh, } we haven't found one yet. {C So } how about you, do you have any pets?"
-    ),
-  },
-  {
-    id: "disfluency-sample-004",
-    split: "validation",
-    transcript_annotated:
-      "{C So, } that, [ that's + ] always sounds good to me, {F um, } [ I feel like, + I feel like ] I'm in the kitchen cooking a lot.",
-    transcript_a:
-      "So, that, that's always sounds good to me, um, I feel like, I feel like I'm in the kitchen cooking a lot.",
-    transcript_b:
-      "So, that, that's always sounds good to me, I feel like, I feel like I'm in the kitchen cooking a lot.",
-    transcript_c:
-      "So, that, always sounds good to me, I feel like I'm in the kitchen cooking a lot.",
-    groundTruth: parseDisfluencyAnnotations(
-      "{C So, } that, [ that's + ] always sounds good to me, {F um, } [ I feel like, + I feel like ] I'm in the kitchen cooking a lot."
-    ),
-  },
-  {
-    id: "disfluency-sample-005",
-    split: "validation",
-    transcript_annotated:
-      "{C But } [ wha-, + what ] practical steps [ could on-, + could one ] take? {F Um, } {D Well, } {C but } everybody will say that he is for that. {F Uh, } {C and, }",
-    transcript_a:
-      "But wha-, what practical steps could on-, could one take? Um, Well, but everybody will say that he is for that. Uh, and,",
-    transcript_b:
-      "But wha-, what practical steps could on-, could one take? but everybody will say that he is for that. and,",
-    transcript_c:
-      "But what practical steps could one take? but everybody will say that he is for that. and,",
-    groundTruth: parseDisfluencyAnnotations(
-      "{C But } [ wha-, + what ] practical steps [ could on-, + could one ] take? {F Um, } {D Well, } {C but } everybody will say that he is for that. {F Uh, } {C and, }"
-    ),
-  },
-];
+    offset: "0",
+    length: String(limit),
+  }).toString();
+
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (response.ok) break;
+    const canRetry = response.status === 429 || response.status >= 500;
+    if (!canRetry || attempt === 2) {
+      throw new Error(`Hugging Face Datasets Server returned HTTP ${response.status}.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
+  if (!response?.ok) throw new Error("Hugging Face Datasets Server returned no usable response.");
+
+  const payload: unknown = await response.json();
+  if (!isRecord(payload) || !Array.isArray(payload.rows)) {
+    throw new Error("Hugging Face Datasets Server returned an unsupported rows response.");
+  }
+  if (payload.rows.length === 0) {
+    throw new Error("Hugging Face validation split returned no samples.");
+  }
+
+  return payload.rows.map((entry, index) => {
+    if (!isRecord(entry) || !isRecord(entry.row)) {
+      throw new Error(`Hugging Face validation row ${index} has an unsupported schema.`);
+    }
+
+    const row = entry.row;
+    const rowIndex = typeof entry.row_idx === "number" ? entry.row_idx : index;
+    const annotated = requiredTranscript(row, "transcript_annotated", rowIndex);
+    const audio = parseAudioField(row.audio, rowIndex);
+
+    return {
+      id: `hf-disfluency-validation-${rowIndex}`,
+      split: "validation",
+      transcript_annotated: annotated,
+      transcript_a: requiredTranscript(row, "transcript_a", rowIndex),
+      transcript_b: requiredTranscript(row, "transcript_b", rowIndex),
+      transcript_c: requiredTranscript(row, "transcript_c", rowIndex),
+      audioUrl: audio.url,
+      audioContentType: audio.contentType,
+      groundTruth: parseDisfluencyAnnotations(annotated),
+    };
+  });
+}
+
+function normalizeEventText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[’]/g, "'")
+    .replace(/[^\p{L}\p{N}'\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const FILLED_PAUSE_PATTERN = /\b(?:uh+|um+|erm?|er+|ah+|hmm+|mm-hm)\b/gi;
+const DISCOURSE_MARKERS = ["you know", "i mean", "i guess", "i think", "well", "see", "oh", "so", "actually", "like"];
+const NON_SPEECH_TERMS = ["laughter", "laughing", "sigh", "sighing", "cough", "coughing", "lipsmack", "gasp"];
+
+function findLexicalEvents(text: string, category: DetectedDisfluency["category"], terms: string[]) {
+  const events: DetectedDisfluency[] = [];
+  for (const term of terms) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`\\b${escaped}\\b`, "gi");
+    for (const match of text.matchAll(regex)) {
+      events.push({ category, text: match[0] });
+    }
+  }
+  return events;
+}
+
+export function detectTranscriptDisfluencies(transcript: string): DetectedDisfluency[] {
+  const events: DetectedDisfluency[] = Array.from(transcript.matchAll(FILLED_PAUSE_PATTERN), ([match]) => ({
+    category: "filledPause",
+    text: match,
+  }));
+  events.push(...findLexicalEvents(transcript, "discourseMarker", DISCOURSE_MARKERS));
+  events.push(...findLexicalEvents(transcript, "nonSpeechEvent", NON_SPEECH_TERMS));
+
+  const words = normalizeEventText(transcript).split(" ").filter(Boolean);
+  for (let index = 0; index < words.length - 1; index++) {
+    const maxLength = Math.min(8, Math.floor((words.length - index) / 2));
+    for (let length = maxLength; length >= 1; length--) {
+      const first = words.slice(index, index + length);
+      const second = words.slice(index + length, index + length * 2);
+      if (first.join(" ") === second.join(" ")) {
+        events.push({ category: "restart", text: first.join(" ") });
+        index += length * 2 - 1;
+        break;
+      }
+    }
+  }
+
+  return events;
+}
+
+export function scoreDisfluencies(
+  groundTruth: ParsedGroundTruthDisfluencies,
+  detected: DetectedDisfluency[],
+): { tp: number; fp: number; fn: number; precision: number | null; recall: number | null; f1: number | null } {
+  const expected = [
+    ...groundTruth.filledPauses.map((text) => ({ category: "filledPause" as const, text })),
+    ...groundTruth.discourseMarkers.map((text) => ({ category: "discourseMarker" as const, text })),
+    ...groundTruth.restarts.map(({ repair }) => ({ category: "restart" as const, text: repair })),
+    ...groundTruth.nonSpeechEvents.map((text) => ({ category: "nonSpeechEvent" as const, text })),
+  ];
+  const matched = new Set<number>();
+  let tp = 0;
+
+  for (const prediction of detected) {
+    const targetIndex = expected.findIndex(
+      (target, index) =>
+        !matched.has(index) &&
+        target.category === prediction.category &&
+        normalizeEventText(target.text) === normalizeEventText(prediction.text),
+    );
+    if (targetIndex >= 0) {
+      matched.add(targetIndex);
+      tp++;
+    }
+  }
+
+  const fp = detected.length - tp;
+  const fn = expected.length - tp;
+  const precision = tp + fp === 0 ? null : Number((tp / (tp + fp)).toFixed(4));
+  const recall = tp + fn === 0 ? null : Number((tp / (tp + fn)).toFixed(4));
+  const f1Denominator = 2 * tp + fp + fn;
+  const f1 = f1Denominator === 0 ? null : Number(((2 * tp) / f1Denominator).toFixed(4));
+  return { tp, fp, fn, precision, recall, f1 };
+}
 
 let cachedEvaluationReport: EvaluationReport | null = null;
 
-/**
- * Fetch live rows from Hugging Face Datasets Server if available
- */
-export async function fetchLiveValidationSamples(limit: number = 5): Promise<DisfluencySample[]> {
-  try {
-    const url = `https://datasets-server.huggingface.co/rows?dataset=amaai-lab/DisfluencySpeech&config=default&split=validation&offset=0&limit=${limit}`;
-    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!response.ok) {
-      console.warn(`[eval_hf_notice] Datasets server returned HTTP ${response.status}, falling back to embedded samples.`);
-      return EMBEDDED_VALIDATION_SAMPLES.slice(0, limit);
-    }
-    const data = await response.json();
-    if (!data.rows || !Array.isArray(data.rows) || data.rows.length === 0) {
-      return EMBEDDED_VALIDATION_SAMPLES.slice(0, limit);
-    }
-
-    return data.rows.map((r: any, idx: number) => {
-      const row = r.row || {};
-      const annotated = row.transcript_annotated || "";
-      const audioUrl = Array.isArray(row.audio) && row.audio[0]?.src ? row.audio[0].src : undefined;
-
-      return {
-        id: `hf-disfluency-val-${idx + 1}`,
-        split: "validation" as const,
-        transcript_annotated: annotated,
-        transcript_a: row.transcript_a || "",
-        transcript_b: row.transcript_b || "",
-        transcript_c: row.transcript_c || "",
-        audioUrl,
-        groundTruth: parseDisfluencyAnnotations(annotated),
-      };
-    });
-  } catch (err: any) {
-    console.warn("[eval_hf_notice] Live sample fetch failed, using embedded samples:", err.message || err);
-    return EMBEDDED_VALIDATION_SAMPLES.slice(0, limit);
-  }
-}
-
-/**
- * Execute the evaluation pipeline across a sample set.
- * Compares SpeakEase's transcription and disfluency analysis with ground truth.
- */
-export async function runDisfluencyEvaluation(sampleLimit: number = 5): Promise<EvaluationReport> {
-  console.log(`[EVAL_START] Running evaluation pipeline on sampleLimit=${sampleLimit}`);
+export async function runDisfluencyEvaluation(sampleLimit = 5): Promise<EvaluationReport> {
   const samples = await fetchLiveValidationSamples(sampleLimit);
   const results: SampleEvaluationResult[] = [];
-
+  let editErrorsRawA = 0;
+  let editErrorsFluentC = 0;
+  let referenceWordsRawA = 0;
+  let referenceWordsFluentC = 0;
   let totalTp = 0;
   let totalFp = 0;
   let totalFn = 0;
-  let sumWerA = 0;
-  let sumWerC = 0;
 
   for (const sample of samples) {
-    let hypothesisTranscript = "";
-    let detectedRepetitions = 0;
-    let detectedPauses = 0;
-    let detectedEventsCount = 0;
-    const observations: string[] = [];
-
-    // Attempt audio processing if audioUrl is present
-    if (sample.audioUrl) {
-      try {
-        const audioRes = await fetch(sample.audioUrl, { signal: AbortSignal.timeout(10000) });
-        if (audioRes.ok) {
-          const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-          const whisperRes = await transcribeAudioWithGroqWhisper(audioBuffer, "audio/wav");
-          if (whisperRes?.transcript) {
-            hypothesisTranscript = whisperRes.transcript;
-            observations.push("Transcribed with Groq Whisper-large-v3-turbo.");
-          } else {
-            const geminiRes = await fallbackGeminiTranscription(audioBuffer, "audio/wav");
-            if (geminiRes?.transcript) {
-              hypothesisTranscript = geminiRes.transcript;
-              observations.push("Transcribed with Gemini Audio STT fallback.");
-            }
-          }
-
-          const acoustics = analyzeAudioAcoustics({
-            audioBuffer,
-            transcript: hypothesisTranscript || sample.transcript_a,
-            targetPassageText: sample.transcript_c,
-          });
-
-          detectedRepetitions = acoustics.repetitionsCount;
-          detectedPauses = acoustics.pausesCount;
-          detectedEventsCount = acoustics.events.length;
-          observations.push(`Acoustics detected ${acoustics.repetitionsCount} reps, ${acoustics.pausesCount} pauses, ${acoustics.events.length} frame events.`);
-        }
-      } catch (audioErr: any) {
-        observations.push(`Audio fetch/analysis note: ${audioErr.message || audioErr}`);
-      }
+    const audioResponse = await fetch(sample.audioUrl, { signal: AbortSignal.timeout(20000) });
+    if (!audioResponse.ok) {
+      throw new Error(`Could not fetch dataset audio for ${sample.id} (HTTP ${audioResponse.status}).`);
+    }
+    const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
+    if (audioBuffer.length === 0) {
+      throw new Error(`Dataset audio for ${sample.id} was empty.`);
     }
 
-    // If audio transcription was not available, run text-based Groq analysis on transcript A
+    const contentType = audioResponse.headers.get("content-type") || sample.audioContentType;
+    const groqResult = await transcribeAudioWithGroqWhisper(audioBuffer, contentType);
+    const geminiResult = groqResult?.transcript
+      ? null
+      : await fallbackGeminiTranscription(audioBuffer, contentType);
+    const hypothesisTranscript = groqResult?.transcript?.trim() || geminiResult?.transcript?.trim() || "";
     if (!hypothesisTranscript) {
-      hypothesisTranscript = sample.transcript_a;
-      observations.push("Used reference transcript A as hypothesis baseline.");
+      throw new Error(
+        `No speech transcription was produced for ${sample.id}. Configure GROQ_API_KEY or GEMINI_API_KEY; reference text is never substituted for a prediction.`,
+      );
     }
 
-    // Fast Groq text structuring
-    const groqFast = await processTranscriptWithGroq(hypothesisTranscript, {
-      repetitions: detectedRepetitions,
-      pauses: detectedPauses,
-    });
-
-    if (groqFast) {
-      if (groqFast.possible_repetition_mentions > detectedRepetitions) {
-        detectedRepetitions = groqFast.possible_repetition_mentions;
-      }
-      if (groqFast.pause_mentions > detectedPauses) {
-        detectedPauses = groqFast.pause_mentions;
-      }
-    }
-
-    // Calculate WER
     const werA = calculateWER(sample.transcript_a, hypothesisTranscript);
     const werC = calculateWER(sample.transcript_c, hypothesisTranscript);
-    sumWerA += werA.wer;
-    sumWerC += werC.wer;
+    if (werA.wer === null || werC.wer === null) {
+      throw new Error(`Ground-truth transcripts for ${sample.id} contain no reference words.`);
+    }
+    editErrorsRawA += werA.substitutions + werA.deletions + werA.insertions;
+    editErrorsFluentC += werC.substitutions + werC.deletions + werC.insertions;
+    referenceWordsRawA += werA.refCount;
+    referenceWordsFluentC += werC.refCount;
 
-    // Disfluency Event Matching:
-    // Ground truth events = filled pauses + repetitions/restarts + discourse markers
-    const gtCount = sample.groundTruth.totalCount;
-    const predCount = detectedRepetitions + (detectedPauses > 0 ? 1 : 0);
-
-    const tp = Math.min(gtCount, predCount);
-    const fp = Math.max(0, predCount - gtCount);
-    const fn = Math.max(0, gtCount - predCount);
-
-    totalTp += tp;
-    totalFp += fp;
-    totalFn += fn;
-
-    const precision = tp + fp > 0 ? Number((tp / (tp + fp)).toFixed(4)) : 1.0;
-    const recall = tp + fn > 0 ? Number((tp / (tp + fn)).toFixed(4)) : 0.0;
-    const f1 = precision + recall > 0 ? Number(((2 * precision * recall) / (precision + recall)).toFixed(4)) : 0.0;
+    const detectedDisfluencies = detectTranscriptDisfluencies(hypothesisTranscript);
+    const scores = scoreDisfluencies(sample.groundTruth, detectedDisfluencies);
+    totalTp += scores.tp;
+    totalFp += scores.fp;
+    totalFn += scores.fn;
 
     results.push({
       sampleId: sample.id,
@@ -356,37 +402,38 @@ export async function runDisfluencyEvaluation(sampleLimit: number = 5): Promise<
       werVsRawA: werA.wer,
       werVsFluentC: werC.wer,
       groundTruthDisfluencies: sample.groundTruth,
-      detectedRepetitions,
-      detectedPauses,
-      detectedEventsCount,
-      tp,
-      fp,
-      fn,
-      precision,
-      recall,
-      f1,
+      detectedDisfluencies,
+      ...scores,
       timestampStatus: "UNAVAILABLE_IN_TABULAR_SCHEMA",
-      observations,
+      observations: [
+        groqResult?.transcript
+          ? "Hypothesis transcribed from dataset audio with Groq Whisper."
+          : "Hypothesis transcribed from dataset audio with Gemini fallback.",
+        "Event metrics use exact lexical matches between detected transcript events and annotated ground truth; they are not acoustic timestamp scores.",
+      ],
     });
   }
 
-  const overallPrecision = totalTp + totalFp > 0 ? Number((totalTp / (totalTp + totalFp)).toFixed(4)) : 0;
-  const overallRecall = totalTp + totalFn > 0 ? Number((totalTp / (totalTp + totalFn)).toFixed(4)) : 0;
+  const overallPrecision =
+    totalTp + totalFp === 0 ? null : Number((totalTp / (totalTp + totalFp)).toFixed(4));
+  const overallRecall =
+    totalTp + totalFn === 0 ? null : Number((totalTp / (totalTp + totalFn)).toFixed(4));
+  const overallF1Denominator = 2 * totalTp + totalFp + totalFn;
   const overallF1 =
-    overallPrecision + overallRecall > 0
-      ? Number(((2 * overallPrecision * overallRecall) / (overallPrecision + overallRecall)).toFixed(4))
-      : 0;
+    overallF1Denominator === 0 ? null : Number(((2 * totalTp) / overallF1Denominator).toFixed(4));
 
   const report: EvaluationReport = {
     timestamp: new Date().toISOString(),
     dataset: "amaai-lab/DisfluencySpeech (Hugging Face)",
-    sampleCount: samples.length,
+    sampleCount: results.length,
     aggregateMetrics: {
-      meanWerRawA: Number((sumWerA / samples.length).toFixed(4)),
-      meanWerFluentC: Number((sumWerC / samples.length).toFixed(4)),
+      corpusWerRawA: Number((editErrorsRawA / referenceWordsRawA).toFixed(4)),
+      corpusWerFluentC: Number((editErrorsFluentC / referenceWordsFluentC).toFixed(4)),
       overallPrecision,
       overallRecall,
       overallF1,
+      totalReferenceWordsRawA: referenceWordsRawA,
+      totalReferenceWordsFluentC: referenceWordsFluentC,
       totalGroundTruthDisfluencies: totalTp + totalFn,
       totalDetectedEvents: totalTp + totalFp,
       totalTruePositives: totalTp,
@@ -399,14 +446,13 @@ export async function runDisfluencyEvaluation(sampleLimit: number = 5): Promise<
       suitableForEvaluation: true,
       suitableForPatientPractice: false,
       practiceLibraryRecommendation:
-        "DEFERRED for patient practice. Raw DisfluencySpeech / Switchboard utterances contain intentional simulated speech errors, informal telephone chatter, and uncontrolled conversational topics. Retain SpeakEase's curated therapeutic passages (practiceContent.ts) for clinical practice to maintain gentle-onset and pacing goals.",
+        "Do not use these research samples for patient practice. Keep the curated therapeutic practice library separate.",
     },
     safetyNotice:
-      "DEVELOPMENT & ML EVALUATION BENCHMARK ONLY. These research results are completely isolated from clinical session tables and never assigned as diagnostic measures to SpeakEase users.",
+      "DEVELOPMENT & ML EVALUATION ONLY. Research samples and metrics are isolated from clinical session data and patient-facing flows.",
   };
 
   cachedEvaluationReport = report;
-  console.log(`[EVAL_COMPLETE] Evaluated ${samples.length} samples. Mean WER(A)=${report.aggregateMetrics.meanWerRawA}, F1=${report.aggregateMetrics.overallF1}`);
   return report;
 }
 

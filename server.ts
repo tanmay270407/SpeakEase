@@ -811,22 +811,16 @@ app.get("/api/admin/users", async (req, res) => {
     const { data: { user }, error: authError } = await supabase.auth.getUser(req.headers.authorization?.replace("Bearer ", ""));
     if (authError || !user) return res.status(401).json({ error: "Invalid token" });
 
-    // Check if user is an ADMIN or authorized demo account
-    const isDemoAdmin = user.email?.toLowerCase() === 'admin@gmail.com';
-    let isAdmin = isDemoAdmin;
-
-    if (!isAdmin) {
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-      if (profile?.role === 'ADMIN') {
-        isAdmin = true;
-      }
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profileError) {
+      console.error("Admin profile authorization error:", profileError);
+      return res.status(500).json({ error: "Could not verify administrator privileges" });
     }
-
-    if (!isAdmin) {
+    if (profile?.role !== 'ADMIN') {
       return res.status(403).json({ error: "Forbidden: Administrator privileges required" });
     }
 
@@ -878,6 +872,53 @@ app.get("/api/admin/users", async (req, res) => {
 // SAFETY: Development evaluation only. No clinical patient writes.
 // ========================================================
 
+const requireDevelopmentEvaluator: express.RequestHandler = async (req, res, next) => {
+  const isDevelopment =
+    process.env.NODE_ENV === "development" ||
+    (process.env.NODE_ENV === undefined && process.env.npm_lifecycle_event === "dev");
+  if (!isDevelopment) {
+    return res.status(404).json({ success: false, error: "Not found" });
+  }
+
+  const bearerToken = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || "")?.[1];
+  if (!bearerToken) {
+    return res.status(401).json({ success: false, error: "A valid bearer token is required." });
+  }
+
+  const supabase = getSupabaseClient(req);
+  if (!supabase) {
+    return res.status(401).json({ success: false, error: "A valid bearer token is required." });
+  }
+
+  try {
+    const { data: { user }, error: authError } = await supabase.auth.getUser(bearerToken);
+    if (authError || !user) {
+      return res.status(401).json({ success: false, error: "The bearer token is invalid or expired." });
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (profileError) {
+      console.error("Evaluation profile authorization error:", profileError);
+      return res.status(500).json({ success: false, error: "Could not verify evaluation access." });
+    }
+    if (profile?.role !== "ADMIN" && profile?.role !== "SLP") {
+      return res.status(403).json({ success: false, error: "Administrator or clinician access is required." });
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return next();
+  } catch (error) {
+    console.error("Evaluation authorization error:", error);
+    return res.status(500).json({ success: false, error: "Could not verify evaluation access." });
+  }
+};
+
+app.use("/api/dev/eval", requireDevelopmentEvaluator);
+
 app.get("/api/dev/eval/dataset-info", (_req, res) => {
   return res.json({
     success: true,
@@ -887,7 +928,11 @@ app.get("/api/dev/eval/dataset-info", (_req, res) => {
 
 app.get("/api/dev/eval/samples", async (req, res) => {
   try {
-    const limit = Math.min(10, Math.max(1, parseInt(req.query.limit as string) || 5));
+    const parsedLimit = z.coerce.number().int().min(1).max(10).safeParse(req.query.limit ?? 5);
+    if (!parsedLimit.success) {
+      return res.status(400).json({ success: false, error: "Limit must be an integer between 1 and 10." });
+    }
+    const limit = parsedLimit.data;
     const samples = await fetchLiveValidationSamples(limit);
     return res.json({
       success: true,
@@ -895,13 +940,18 @@ app.get("/api/dev/eval/samples", async (req, res) => {
       samples,
     });
   } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || err });
+    console.error("Evaluation sample load error:", err);
+    return res.status(502).json({ success: false, error: err.message || "Could not load dataset samples." });
   }
 });
 
 app.post("/api/dev/eval/run", async (req, res) => {
   try {
-    const limit = Math.min(10, Math.max(1, parseInt(req.body?.limit as string) || 3));
+    const parsedLimit = z.coerce.number().int().min(1).max(10).safeParse(req.body?.limit ?? 3);
+    if (!parsedLimit.success) {
+      return res.status(400).json({ success: false, error: "Limit must be an integer between 1 and 10." });
+    }
+    const limit = parsedLimit.data;
     const report = await runDisfluencyEvaluation(limit);
     return res.json({
       success: true,
@@ -914,18 +964,7 @@ app.post("/api/dev/eval/run", async (req, res) => {
 });
 
 app.get("/api/dev/eval/latest-report", async (_req, res) => {
-  try {
-    let report = getLatestEvaluationReport();
-    if (!report) {
-      report = await runDisfluencyEvaluation(3);
-    }
-    return res.json({
-      success: true,
-      report,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message || err });
-  }
+  return res.json({ success: true, report: getLatestEvaluationReport() });
 });
 
 app.get("/api/practice/content", async (req, res) => {
@@ -2634,4 +2673,3 @@ const isDirectRun = Boolean(
 if (!isServerless && isDirectRun) {
   startServer();
 }
-

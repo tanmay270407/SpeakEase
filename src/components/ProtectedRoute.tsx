@@ -39,31 +39,14 @@ export function ProtectedRoute({ children, allowedRoles, demoOnly }: ProtectedRo
     return <>{children}</>;
   }
 
-  // 2. Admin access check
-  if (allowedRoles?.includes('ADMIN')) {
-    if (profile.role === 'ADMIN' || isDemoAccount) {
+  // Administrators may use only their explicitly selected demo role outside admin routes.
+  if (profile.role === 'ADMIN') {
+    if (allowedRoles?.includes('ADMIN') || (allowedRoles && allowedRoles.includes(demoRole))) {
       return <>{children}</>;
     }
-    if (profile.role === 'SLP') {
-      return <Navigate to="/slp" replace />;
-    }
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={demoRole === 'SLP' ? '/slp' : '/dashboard'} replace />;
   }
 
-  // 3. Demo Account Role Resolution
-  // The verified demo presenter account can dynamically access both Patient and SLP experiences
-  if (isDemoAccount) {
-    if (allowedRoles && !allowedRoles.includes(demoRole)) {
-      if (demoRole === 'SLP') {
-        return <Navigate to="/slp" replace />;
-      }
-      return <Navigate to="/dashboard" replace />;
-    }
-    return <>{children}</>;
-  }
-
-  // 4. Strict Security for Normal Accounts
-  // Normal USER and SLP accounts can NEVER switch roles or access unauthorized areas
   if (allowedRoles && !allowedRoles.includes(profile.role)) {
     if (profile.role === 'SLP') {
       return <Navigate to="/slp" replace />;

@@ -50,9 +50,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     }
   };
 
-  const isDemoAccount = Boolean(
-    profile && (profile.email?.toLowerCase() === 'admin@gmail.com' || profile.role === 'ADMIN')
-  );
+  const isDemoAccount = profile?.role === 'ADMIN';
 
   useEffect(() => {
     // Check active session
@@ -89,31 +87,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         .from('profiles')
         .select('*')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
 
       if (error || !data) {
-        // Fallback to metadata if DB row isn't created yet
-        const { data: userData } = await supabase.auth.getUser();
-        const currentUser = userData?.user;
-        if (currentUser) {
-          const metaRole = (currentUser.user_metadata?.role as any) || 'USER';
-          const metaName = currentUser.user_metadata?.full_name || currentUser.email?.split('@')[0] || 'User';
-          setProfile({
-            id: currentUser.id,
-            user_id: currentUser.id,
-            email: currentUser.email || '',
-            full_name: metaName,
-            role: metaRole,
-            phone: currentUser.user_metadata?.phone || null,
-            created_at: currentUser.created_at || new Date().toISOString(),
-            updated_at: currentUser.updated_at || new Date().toISOString(),
-          });
-        }
+        if (error) console.error('Profile lookup failed:', error.message);
+        setProfile(null);
       } else {
         setProfile(data);
       }
     } catch (err) {
       console.error('Unexpected error fetching profile:', err);
+      setProfile(null);
     } finally {
       setIsLoading(false);
     }

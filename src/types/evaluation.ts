@@ -85,6 +85,7 @@ export const DISFLUENCY_SPEECH_METADATA: DatasetInfo = {
 export interface ParsedGroundTruthDisfluencies {
   filledPauses: string[];      // e.g. ["uh", "um"]
   discourseMarkers: string[];  // e.g. ["you know", "well"]
+  coordinatingConjunctions: string[];
   restarts: Array<{ raw: string; reparandum: string; repair: string }>; // e.g. ["[ I + I ]"]
   nonSpeechEvents: string[];   // e.g. ["laughter", "sigh"]
   totalCount: number;
@@ -97,8 +98,14 @@ export interface DisfluencySample {
   transcript_a: string;
   transcript_b: string;
   transcript_c: string;
-  audioUrl?: string;
+  audioUrl: string;
+  audioContentType: string;
   groundTruth: ParsedGroundTruthDisfluencies;
+}
+
+export interface DetectedDisfluency {
+  category: "filledPause" | "discourseMarker" | "restart" | "nonSpeechEvent";
+  text: string;
 }
 
 export interface SampleEvaluationResult {
@@ -106,18 +113,16 @@ export interface SampleEvaluationResult {
   referenceTextA: string;
   referenceTextC: string;
   hypothesisTranscript: string;
-  werVsRawA: number;        // WER against verbatim transcript A (0.0 - 1.0)
-  werVsFluentC: number;     // WER against cleaned fluent transcript C (0.0 - 1.0)
+  werVsRawA: number;
+  werVsFluentC: number;
   groundTruthDisfluencies: ParsedGroundTruthDisfluencies;
-  detectedRepetitions: number;
-  detectedPauses: number;
-  detectedEventsCount: number;
+  detectedDisfluencies: DetectedDisfluency[];
   tp: number;
   fp: number;
   fn: number;
-  precision: number;
-  recall: number;
-  f1: number;
+  precision: number | null;
+  recall: number | null;
+  f1: number | null;
   timestampStatus: "UNAVAILABLE_IN_TABULAR_SCHEMA";
   observations: string[];
 }
@@ -127,11 +132,13 @@ export interface EvaluationReport {
   dataset: string;
   sampleCount: number;
   aggregateMetrics: {
-    meanWerRawA: number;
-    meanWerFluentC: number;
-    overallPrecision: number;
-    overallRecall: number;
-    overallF1: number;
+    corpusWerRawA: number;
+    corpusWerFluentC: number;
+    overallPrecision: number | null;
+    overallRecall: number | null;
+    overallF1: number | null;
+    totalReferenceWordsRawA: number;
+    totalReferenceWordsFluentC: number;
     totalGroundTruthDisfluencies: number;
     totalDetectedEvents: number;
     totalTruePositives: number;

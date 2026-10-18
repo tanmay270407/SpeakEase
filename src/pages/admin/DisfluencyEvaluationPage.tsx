@@ -17,11 +17,15 @@ import {
   ChevronRight
 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
+import { supabase } from "../../lib/supabase";
 import {
   DatasetInfo,
   EvaluationReport,
   DISFLUENCY_SPEECH_METADATA
 } from "../../types/evaluation";
+
+const formatMetric = (value: number | null) =>
+  value === null ? "N/A" : `${(value * 100).toFixed(1)}%`;
 
 export function DisfluencyEvaluationPage() {
   const [datasetInfo, setDatasetInfo] = useState<DatasetInfo>(DISFLUENCY_SPEECH_METADATA);
@@ -31,15 +35,30 @@ export function DisfluencyEvaluationPage() {
   const [sampleLimit, setSampleLimit] = useState(3);
   const [error, setError] = useState<string | null>(null);
 
+  const getAuthorizationHeaders = async () => {
+    const { data, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) throw sessionError;
+    if (!data.session?.access_token) {
+      throw new Error("Your session has expired. Sign in again to access evaluation.");
+    }
+    return { Authorization: `Bearer ${data.session.access_token}` };
+  };
+
+  const readApiError = async (response: Response, fallback: string) => {
+    const payload = await response.json().catch(() => null);
+    if (typeof payload?.error === "string") return payload.error;
+    return `${fallback} (HTTP ${response.status}).`;
+  };
+
   const fetchDatasetInfo = async () => {
     try {
-      const res = await fetch("/api/dev/eval/dataset-info");
-      if (res.ok) {
-        const json = await res.json();
-        if (json.dataset) setDatasetInfo(json.dataset);
-      }
-    } catch (err: any) {
-      console.warn("Using local dataset info:", err);
+      const headers = await getAuthorizationHeaders();
+      const res = await fetch("/api/dev/eval/dataset-info", { headers });
+      if (!res.ok) throw new Error(await readApiError(res, "Could not load dataset metadata"));
+      const json = await res.json();
+      if (json.dataset) setDatasetInfo(json.dataset);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not load dataset metadata.");
     }
   };
 
@@ -47,17 +66,13 @@ export function DisfluencyEvaluationPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/dev/eval/latest-report");
-      if (res.ok) {
-        const json = await res.json();
-        if (json.report) {
-          setReport(json.report);
-        }
-      } else {
-        throw new Error("Failed to load evaluation report.");
-      }
-    } catch (err: any) {
-      setError(err.message || "Could not retrieve evaluation report.");
+      const headers = await getAuthorizationHeaders();
+      const res = await fetch("/api/dev/eval/latest-report", { headers });
+      if (!res.ok) throw new Error(await readApiError(res, "Could not load evaluation report"));
+      const json = await res.json();
+      setReport(json.report ?? null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not retrieve evaluation report.");
     } finally {
       setLoading(false);
     }
@@ -67,21 +82,18 @@ export function DisfluencyEvaluationPage() {
     setRunningEval(true);
     setError(null);
     try {
+      const headers = await getAuthorizationHeaders();
       const res = await fetch("/api/dev/eval/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ limit: sampleLimit }),
       });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.report) {
-          setReport(json.report);
-        }
-      } else {
-        throw new Error("Evaluation run failed.");
-      }
-    } catch (err: any) {
-      setError(err.message || "Failed to execute evaluation run.");
+      if (!res.ok) throw new Error(await readApiError(res, "Evaluation run failed"));
+      const json = await res.json();
+      if (!json.report) throw new Error("Evaluation run did not return a report.");
+      setReport(json.report);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to execute evaluation run.");
     } finally {
       setRunningEval(false);
     }
@@ -245,7 +257,7 @@ export function DisfluencyEvaluationPage() {
             <p className="text-xs text-slate-500">
               ~{datasetInfo.totalHours} hrs total ({datasetInfo.splits.train.toLocaleString()} train / {datasetInfo.splits.validation} val / {datasetInfo.splits.test} test)
             </p>
-            <p className="text-[11px] text-emerald-600 font-semibold mt-1">Single Samson Q2U microphone</p>
+            <p className="text-[11px] text-emerald-600 font-semibold mt-1">Studio-quality single-speaker audio</p>
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs space-y-1">
@@ -273,6 +285,12 @@ export function DisfluencyEvaluationPage() {
           </div>
         </div>
 
+        {!report && !loading && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-xs">
+            No evaluation report is available in this server process yet. Run the benchmark to generate a report from live dataset audio.
+          </div>
+        )}
+
         {/* Aggregate Benchmark Results */}
         {report && (
           <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
@@ -283,37 +301,39 @@ export function DisfluencyEvaluationPage() {
                   SpeakEase Pipeline Benchmark Metrics ({report.sampleCount} Samples)
                 </h2>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Last evaluated: {new Date(report.timestamp).toLocaleString()}
+                  {Number.isFinite(Date.parse(report.timestamp))
+                    ? `Last evaluated: ${new Date(report.timestamp).toLocaleString()}`
+                    : "Evaluation timestamp unavailable"}
                 </p>
               </div>
 
               <span className="text-xs font-medium text-slate-500 bg-slate-100 px-3 py-1 rounded-full">
-                Whisper Turbo + Groq + Acoustic Frame Analyzer
+                Audio transcription + lexical event matching
               </span>
             </div>
 
             {/* Metrics Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-center">
-                <span className="text-[11px] font-semibold uppercase text-slate-500">WER vs Raw (A)</span>
+                <span className="text-[11px] font-semibold uppercase text-slate-500">Corpus WER vs Raw (A)</span>
                 <p className="text-2xl font-black text-slate-900">
-                  {(report.aggregateMetrics.meanWerRawA * 100).toFixed(1)}%
+                  {formatMetric(report.aggregateMetrics.corpusWerRawA)}
                 </p>
-                <p className="text-[11px] text-slate-500">Verbatim with disfluencies</p>
+                <p className="text-[11px] text-slate-500">{report.aggregateMetrics.totalReferenceWordsRawA.toLocaleString()} reference words</p>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-center">
-                <span className="text-[11px] font-semibold uppercase text-slate-500">WER vs Fluent Target (C)</span>
+                <span className="text-[11px] font-semibold uppercase text-slate-500">Corpus WER vs Fluent (C)</span>
                 <p className="text-2xl font-black text-indigo-600">
-                  {(report.aggregateMetrics.meanWerFluentC * 100).toFixed(1)}%
+                  {formatMetric(report.aggregateMetrics.corpusWerFluentC)}
                 </p>
-                <p className="text-[11px] text-slate-500">Cleaned target comparison</p>
+                <p className="text-[11px] text-slate-500">{report.aggregateMetrics.totalReferenceWordsFluentC.toLocaleString()} reference words</p>
               </div>
 
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-center">
-                <span className="text-[11px] font-semibold uppercase text-slate-500">Disfluency Precision</span>
+                <span className="text-[11px] font-semibold uppercase text-slate-500">Event Precision</span>
                 <p className="text-2xl font-black text-emerald-600">
-                  {(report.aggregateMetrics.overallPrecision * 100).toFixed(1)}%
+                  {formatMetric(report.aggregateMetrics.overallPrecision)}
                 </p>
                 <p className="text-[11px] text-slate-500">
                   TP: {report.aggregateMetrics.totalTruePositives} | FP: {report.aggregateMetrics.totalFalsePositives}
@@ -321,12 +341,22 @@ export function DisfluencyEvaluationPage() {
               </div>
 
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-center">
-                <span className="text-[11px] font-semibold uppercase text-slate-500">Disfluency F1 Score</span>
-                <p className="text-2xl font-black text-indigo-700">
-                  {(report.aggregateMetrics.overallF1 * 100).toFixed(1)}%
+                <span className="text-[11px] font-semibold uppercase text-slate-500">Event Recall</span>
+                <p className="text-2xl font-black text-amber-600">
+                  {formatMetric(report.aggregateMetrics.overallRecall)}
                 </p>
                 <p className="text-[11px] text-slate-500">
-                  Recall: {(report.aggregateMetrics.overallRecall * 100).toFixed(1)}%
+                  FN: {report.aggregateMetrics.totalFalseNegatives}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-center">
+                <span className="text-[11px] font-semibold uppercase text-slate-500">Disfluency F1 Score</span>
+                <p className="text-2xl font-black text-indigo-700">
+                  {formatMetric(report.aggregateMetrics.overallF1)}
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Micro-averaged
                 </p>
               </div>
             </div>
@@ -346,7 +376,8 @@ export function DisfluencyEvaluationPage() {
                       <th className="py-3 px-4">Pipeline Hypothesis</th>
                       <th className="py-3 px-4 text-center">WER (A / C)</th>
                       <th className="py-3 px-4 text-center">GT Events</th>
-                      <th className="py-3 px-4 text-center">Detected</th>
+                      <th className="py-3 px-4 text-center">Detected events</th>
+                      <th className="py-3 px-4 text-center">TP / FP / FN</th>
                       <th className="py-3 px-4 text-center">F1</th>
                     </tr>
                   </thead>
@@ -372,9 +403,19 @@ export function DisfluencyEvaluationPage() {
                                   {`{D ${dm}}`}
                                 </span>
                               ))}
+                              {s.groundTruthDisfluencies.coordinatingConjunctions.map((conjunction, i) => (
+                                <span key={`conjunction-${i}`} className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700">
+                                  {`{C ${conjunction}}`}
+                                </span>
+                              ))}
                               {s.groundTruthDisfluencies.restarts.map((rst, i) => (
-                                <span key={i} className="px-1.5 py-0.5 rounded-md bg-purple-100 text-purple-800">
-                                  restart
+                                <span key={`restart-${i}`} className="px-1.5 py-0.5 rounded-md bg-purple-100 text-purple-800">
+                                  {`restart: ${rst.reparandum} → ${rst.repair}`}
+                                </span>
+                              ))}
+                              {s.groundTruthDisfluencies.nonSpeechEvents.map((event, i) => (
+                                <span key={`event-${i}`} className="px-1.5 py-0.5 rounded-md bg-rose-100 text-rose-800">
+                                  {`<${event}>`}
                                 </span>
                               ))}
                             </div>
@@ -385,31 +426,41 @@ export function DisfluencyEvaluationPage() {
                             {s.hypothesisTranscript}
                           </p>
                           {s.observations.length > 0 && (
-                            <p className="text-[10px] text-slate-400 mt-0.5 italic">
-                              {s.observations[0]}
-                            </p>
+                            <div className="mt-1 space-y-0.5">
+                              {s.observations.map((observation) => (
+                                <p key={observation} className="text-[10px] text-slate-400 italic">{observation}</p>
+                              ))}
+                            </div>
                           )}
                         </td>
                         <td className="py-3 px-4 text-center whitespace-nowrap font-mono font-semibold">
-                          <span className="text-slate-700">{(s.werVsRawA * 100).toFixed(0)}%</span>
+                          <span className="text-slate-700">{formatMetric(s.werVsRawA)}</span>
                           <span className="text-slate-300 mx-1">/</span>
-                          <span className="text-indigo-600">{(s.werVsFluentC * 100).toFixed(0)}%</span>
+                          <span className="text-indigo-600">{formatMetric(s.werVsFluentC)}</span>
                         </td>
                         <td className="py-3 px-4 text-center font-bold text-slate-700">
                           {s.groundTruthDisfluencies.totalCount}
                         </td>
                         <td className="py-3 px-4 text-center font-bold text-indigo-600">
-                          {s.detectedRepetitions + (s.detectedPauses > 0 ? 1 : 0)}
+                          {s.detectedDisfluencies.length}
+                          {s.detectedDisfluencies.length > 0 && (
+                            <p className="mt-1 max-w-36 text-[10px] font-normal text-slate-500">
+                              {s.detectedDisfluencies.map((event) => event.text).join(", ")}
+                            </p>
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono text-slate-600">
+                          {s.tp} / {s.fp} / {s.fn}
                         </td>
                         <td className="py-3 px-4 text-center whitespace-nowrap">
                           <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                            s.f1 >= 0.7
+                            s.f1 !== null && s.f1 >= 0.7
                               ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                              : s.f1 >= 0.4
+                              : s.f1 !== null && s.f1 >= 0.4
                               ? "bg-amber-50 text-amber-700 border border-amber-200"
                               : "bg-slate-100 text-slate-600 border border-slate-200"
                           }`}>
-                            {(s.f1 * 100).toFixed(0)}%
+                            {formatMetric(s.f1)}
                           </span>
                         </td>
                       </tr>
@@ -432,10 +483,10 @@ export function DisfluencyEvaluationPage() {
             <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
               <p className="font-bold text-slate-900">ASR Normalization vs. Disfluency Preservation</p>
               <p>
-                Standard Whisper models frequently perform implicit text normalization, automatically omitting filled pauses
-                like "uh" and "um". This increases WER against verbatim reference <code className="font-mono">transcript_a</code>,
-                while yielding lower WER against <code className="font-mono">transcript_c</code> (fluent target).
-                SpeakEase's acoustic frame analyzer bridges this gap by directly measuring pauses and syllable repetitions from raw audio frames.
+                The benchmark transcribes the actual dataset audio and compares it with both
+                <code className="font-mono"> transcript_a</code> and <code className="font-mono"> transcript_c</code>.
+                Event scores use a documented lexical detector and exact event/category matches against the annotated labels;
+                they are not acoustic event or timestamp scores.
               </p>
             </div>
 
